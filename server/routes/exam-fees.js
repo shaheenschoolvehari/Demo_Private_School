@@ -40,7 +40,7 @@ router.get('/classes', async (req, res) => {
         
         if (!ctx) return res.status(401).json({ message: 'Unauthorized' });
 
-        let query = `SELECT * FROM classes ORDER BY class_name ASC`;
+        let query = `SELECT *, COALESCE(class_order, class_id) AS class_order FROM classes ORDER BY COALESCE(class_order, class_id) ASC, class_name ASC`;
         let params = [];
 
         // If not admin, check if employee and filter assignments
@@ -51,7 +51,7 @@ router.get('/classes', async (req, res) => {
                 FROM classes c
                 JOIN teacher_class_assignment tca ON tca.class_id = c.class_id
                 WHERE tca.employee_id = $1 AND tca.is_class_teacher = true
-                ORDER BY c.class_name ASC
+                ORDER BY COALESCE(c.class_order, c.class_id) ASC, c.class_name ASC
             `;
             params = [ctx.employeeId];
         } else if (!ctx.isAdmin) {
@@ -89,7 +89,7 @@ router.get('/sections', async (req, res) => {
         const ctx = await getUserContext(pool, user_id);
         if (!ctx) return res.status(401).json({ message: 'Unauthorized' });
 
-        let query = `SELECT * FROM sections WHERE class_id = $1 ORDER BY section_name ASC`;
+        let query = `SELECT *, COALESCE(section_order, section_id) AS section_order FROM sections WHERE class_id = $1 ORDER BY COALESCE(section_order, section_id) ASC, section_name ASC`;
         let params = [class_id];
 
         if (!ctx.isAdmin && ctx.employeeId && ctx.isTeacher && !ctx.isSupervisor) {
@@ -98,7 +98,7 @@ router.get('/sections', async (req, res) => {
                 FROM sections s
                 JOIN teacher_class_assignment tca ON tca.section_id = s.section_id
                 WHERE s.class_id = $1 AND tca.employee_id = $2 AND tca.is_class_teacher = true
-                ORDER BY s.section_name ASC
+                ORDER BY COALESCE(s.section_order, s.section_id) ASC, s.section_name ASC
             `;
             params = [class_id, ctx.employeeId];
         }

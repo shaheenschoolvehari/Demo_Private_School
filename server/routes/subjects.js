@@ -17,7 +17,7 @@ router.get('/', async (req, res) => {
             FROM subjects sub
             JOIN sections s ON sub.section_id = s.section_id
             JOIN classes c ON s.class_id = c.class_id
-            ORDER BY c.class_name, s.section_name, sub.subject_name
+            ORDER BY COALESCE(c.class_order, c.class_id) ASC, COALESCE(s.section_order, s.section_id) ASC, c.class_name, s.section_name, sub.subject_name
         `;
         const result = await pool.query(query);
         res.json(result.rows);

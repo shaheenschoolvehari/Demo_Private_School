@@ -8,7 +8,7 @@ const pool = require('../db');
 // List Classes
 router.get('/', async (req, res) => {
     try {
-        const result = await pool.query("SELECT * FROM classes ORDER BY class_name");
+        const result = await pool.query("SELECT *, COALESCE(class_order, class_id) AS class_order FROM classes ORDER BY COALESCE(class_order, class_id) ASC, class_name ASC");
         res.json(result.rows);
     } catch (err) {
         console.error(err.message);
@@ -19,7 +19,7 @@ router.get('/', async (req, res) => {
 // List Classes (alternate endpoint for clarity)
 router.get('/classes', async (req, res) => {
     try {
-        const result = await pool.query("SELECT * FROM classes ORDER BY class_name");
+        const result = await pool.query("SELECT *, COALESCE(class_order, class_id) AS class_order FROM classes ORDER BY COALESCE(class_order, class_id) ASC, class_name ASC");
         res.json(result.rows);
     } catch (err) {
         console.error(err.message);
@@ -163,10 +163,12 @@ router.delete('/:id', async (req, res) => {
 router.get('/sections', async (req, res) => {
     try {
         const query = `
-            SELECT s.*, c.class_name 
+            SELECT s.*, c.class_name,
+                   COALESCE(c.class_order, c.class_id) AS class_order,
+                   COALESCE(s.section_order, s.section_id) AS section_order
             FROM sections s
             JOIN classes c ON s.class_id = c.class_id
-            ORDER BY c.class_name, s.section_name
+            ORDER BY COALESCE(c.class_order, c.class_id) ASC, COALESCE(s.section_order, s.section_id) ASC, c.class_name, s.section_name
         `;
         const result = await pool.query(query);
         res.json(result.rows);

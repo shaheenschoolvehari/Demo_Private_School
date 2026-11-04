@@ -133,7 +133,7 @@ router.get('/load-students', async (req, res) => {
             paramIndex++;
         }
 
-        query += ` ORDER BY s.first_name, s.last_name`;
+        query += ` ORDER BY COALESCE(c.class_order, c.class_id) ASC, COALESCE(sec.section_order, sec.section_id) ASC, s.first_name, s.last_name`;
 
         const result = await pool.query(query, params);
         res.json(result.rows);

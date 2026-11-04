@@ -62,7 +62,7 @@ router.get('/teacher', async (req, res) => {
                 LEFT JOIN sections sec ON tca.section_id = sec.section_id
                 LEFT JOIN students s ON s.class_id = c.class_id AND s.section_id = sec.section_id
                 GROUP BY c.class_id, c.class_name, sec.section_id, sec.section_name
-                ORDER BY c.class_name, sec.section_name`, [emp_id])
+                ORDER BY COALESCE(c.class_order, c.class_id) ASC, COALESCE(sec.section_order, sec.section_id) ASC, c.class_name, sec.section_name`, [emp_id])
                 : Promise.resolve({ rows: [] }),
 
             // Assigned subjects
@@ -74,7 +74,7 @@ router.get('/teacher', async (req, res) => {
                 JOIN sections sec ON sec.section_id = s.section_id
                 JOIN classes c ON c.class_id = sec.class_id
                 WHERE tsa.employee_id = $1
-                ORDER BY c.class_name, sec.section_name, s.subject_name`, [emp_id])
+                ORDER BY COALESCE(c.class_order, c.class_id) ASC, COALESCE(sec.section_order, sec.section_id) ASC, c.class_name, sec.section_name, s.subject_name`, [emp_id])
                 : Promise.resolve({ rows: [] }),
 
             // Today's attendance summary for teacher's classes (including coordinator delegations)
@@ -96,7 +96,7 @@ router.get('/teacher', async (req, res) => {
                 LEFT JOIN students s ON s.class_id = c.class_id AND s.section_id = sec.section_id
                 LEFT JOIN student_attendance sa ON sa.student_id = s.student_id AND sa.attendance_date = CURRENT_DATE
                 GROUP BY c.class_id, c.class_name, sec.section_id, sec.section_name
-                ORDER BY c.class_name, sec.section_name`, [emp_id])
+                ORDER BY COALESCE(c.class_order, c.class_id) ASC, COALESCE(sec.section_order, sec.section_id) ASC, c.class_name, sec.section_name`, [emp_id])
                 : Promise.resolve({ rows: [] }),
 
             // Teacher's own attendance today
@@ -124,7 +124,7 @@ router.get('/teacher', async (req, res) => {
                 JOIN student_attendance sa ON sa.student_id = st.student_id
                 WHERE sa.attendance_date IS NOT NULL
                 GROUP BY sa.attendance_date, c.class_name, sec.section_name
-                ORDER BY sa.attendance_date DESC, c.class_name, sec.section_name LIMIT 10`, [emp_id])
+                ORDER BY sa.attendance_date DESC, COALESCE(c.class_order, c.class_id) ASC, COALESCE(sec.section_order, sec.section_id) ASC, c.class_name, sec.section_name LIMIT 10`, [emp_id])
                 : Promise.resolve({ rows: [] }),
 
             // Upcoming exams (exams module placeholder graceful fallback)
@@ -986,7 +986,7 @@ router.get('/attendance-details', async (req, res) => {
                 params.push(section_id);
                 sql += ` AND s.section_id = $${params.length}`;
             }
-            sql += ` ORDER BY c.class_name, s.first_name`;
+            sql += ` ORDER BY COALESCE(c.class_order, c.class_id) ASC, c.class_name, s.first_name`;
 
             const { rows } = await pool.query(sql, params);
             return res.json(rows);

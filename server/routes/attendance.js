@@ -1594,7 +1594,9 @@ router.get('/coordinators', async (req, res) => {
                                'class_id', aca.class_id,
                                'class_name', c.class_name,
                                'section_id', aca.section_id,
-                               'section_name', s.section_name
+                               'section_name', s.section_name,
+                               'class_order', COALESCE(c.class_order, c.class_id),
+                               'section_order', COALESCE(s.section_order, s.section_id)
                            )
                        ) FILTER (WHERE aca.id IS NOT NULL), '[]'
                    ) AS assigned_sections
@@ -1607,6 +1609,21 @@ router.get('/coordinators', async (req, res) => {
             GROUP BY e.employee_id, d.department_name
             ORDER BY e.first_name ASC;
         `);
+
+        // Sort each coordinator's assigned sections by priority
+        result.rows.forEach(r => {
+            if (Array.isArray(r.assigned_sections)) {
+                r.assigned_sections.sort((a, b) => {
+                    const coA = Number(a.class_order ?? a.class_id ?? 9999);
+                    const coB = Number(b.class_order ?? b.class_id ?? 9999);
+                    if (coA !== coB) return coA - coB;
+                    const soA = Number(a.section_order ?? a.section_id ?? 9999);
+                    const soB = Number(b.section_order ?? b.section_id ?? 9999);
+                    if (soA !== soB) return soA - soB;
+                    return (a.section_name || '').localeCompare(b.section_name || '');
+                });
+            }
+        });
 
         res.json(result.rows);
     } catch (err) {
@@ -1669,8 +1686,15 @@ router.get('/my-classes', async (req, res) => {
 
             // If Admin or Supervisor with broad access, return all classes and sections
             if (ctx.isAdmin || ctx.isSupervisor) {
-                const allClasses = await client.query('SELECT class_id, class_name FROM classes ORDER BY class_id ASC');
-                const allSections = await client.query('SELECT section_id, section_name, class_id FROM sections ORDER BY class_id ASC, section_name ASC');
+                const allClasses = await client.query('SELECT class_id, class_name, COALESCE(class_order, class_id) AS class_order FROM classes ORDER BY COALESCE(class_order, class_id) ASC, class_name ASC');
+                const allSections = await client.query(`
+                    SELECT s.section_id, s.section_name, s.class_id,
+                           COALESCE(c.class_order, c.class_id) AS class_order,
+                           COALESCE(s.section_order, s.section_id) AS section_order
+                    FROM sections s
+                    JOIN classes c ON s.class_id = c.class_id
+                    ORDER BY COALESCE(c.class_order, c.class_id) ASC, COALESCE(s.section_order, s.section_id) ASC, s.section_name ASC
+                `);
                 return res.json({
                     is_restricted: false,
                     classes: allClasses.rows,
@@ -1707,11 +1731,13 @@ router.get('/my-classes', async (req, res) => {
                     JOIN sections sec ON sub.section_id = sec.section_id
                     WHERE tsa.employee_id = $1
                 )
-                SELECT DISTINCT c.class_id, c.class_name, s.section_id, s.section_name
+                SELECT DISTINCT c.class_id, c.class_name, s.section_id, s.section_name,
+                                COALESCE(c.class_order, c.class_id) as class_order,
+                                COALESCE(s.section_order, s.section_id) as section_order
                 FROM user_assignments ua
                 JOIN classes c ON ua.class_id = c.class_id
                 JOIN sections s ON ua.section_id = s.section_id
-                ORDER BY c.class_id ASC, s.section_name ASC;
+                ORDER BY COALESCE(c.class_order, c.class_id) ASC, COALESCE(s.section_order, s.section_id) ASC, s.section_name ASC;
             `, [ctx.employeeId]);
 
             const classMap = new Map();

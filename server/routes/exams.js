@@ -257,8 +257,15 @@ router.get('/context', async (req, res) => {
 
         // Admin (>=90) and Supervisor (>=65) can see all classes
         if (ctx.isAdmin || ctx.isSupervisor) {
-            const classRes = await client.query(`SELECT class_id, class_name FROM classes ORDER BY class_name ASC`);
-            const sectionRes = await client.query(`SELECT section_id, section_name, class_id FROM sections ORDER BY class_id, section_name ASC`);
+            const classRes = await client.query(`SELECT class_id, class_name, COALESCE(class_order, class_id) AS class_order FROM classes ORDER BY COALESCE(class_order, class_id) ASC, class_name ASC`);
+            const sectionRes = await client.query(`
+                SELECT s.section_id, s.section_name, s.class_id,
+                       COALESCE(c.class_order, c.class_id) AS class_order,
+                       COALESCE(s.section_order, s.section_id) AS section_order
+                FROM sections s
+                JOIN classes c ON s.class_id = c.class_id
+                ORDER BY COALESCE(c.class_order, c.class_id) ASC, COALESCE(s.section_order, s.section_id) ASC, s.section_name ASC
+            `);
             const subjectRes = await client.query(
                 `SELECT s.subject_id, s.subject_name, s.subject_code,
                         sec.section_id, sec.section_name,
@@ -266,7 +273,7 @@ router.get('/context', async (req, res) => {
                  FROM subjects s
                  JOIN sections sec ON sec.section_id = s.section_id
                  JOIN classes c ON c.class_id = sec.class_id
-                 ORDER BY c.class_name, sec.section_name, s.subject_name`
+                 ORDER BY COALESCE(c.class_order, c.class_id) ASC, COALESCE(sec.section_order, sec.section_id) ASC, c.class_name, sec.section_name, s.subject_name`
             );
 
             classes = classRes.rows;
@@ -289,7 +296,9 @@ router.get('/context', async (req, res) => {
                 `SELECT DISTINCT
                     c.class_id, c.class_name,
                     sec.section_id, sec.section_name,
-                    s.subject_id, s.subject_name, s.subject_code
+                    s.subject_id, s.subject_name, s.subject_code,
+                    COALESCE(c.class_order, c.class_id) AS class_order,
+                    COALESCE(sec.section_order, sec.section_id) AS section_order
                  FROM teacher_subject_assignment tsa
                  JOIN subjects s ON s.subject_id = tsa.subject_id
                  JOIN sections sec ON sec.section_id = s.section_id
@@ -301,13 +310,15 @@ router.get('/context', async (req, res) => {
                  SELECT DISTINCT
                     c.class_id, c.class_name,
                     sec.section_id, sec.section_name,
-                    NULL::int as subject_id, NULL::varchar as subject_name, NULL::varchar as subject_code
+                    NULL::int as subject_id, NULL::varchar as subject_name, NULL::varchar as subject_code,
+                    COALESCE(c.class_order, c.class_id) AS class_order,
+                    COALESCE(sec.section_order, sec.section_id) AS section_order
                  FROM teacher_class_assignment tca
                  JOIN classes c ON c.class_id = tca.class_id
                  JOIN sections sec ON sec.section_id = tca.section_id
                  WHERE tca.employee_id = $1 AND tca.is_class_teacher = true
 
-                 ORDER BY class_name, section_name, subject_name`,
+                 ORDER BY class_order ASC, section_order ASC, class_name, section_name, subject_name`,
                 [ctx.employeeId]
             );
 
@@ -382,8 +393,15 @@ router.get('/context/class-teacher', async (req, res) => {
         let sections = [];
 
         if (ctx.isAdmin || ctx.isSupervisor) {
-            const classRes = await client.query(`SELECT class_id, class_name FROM classes ORDER BY class_name ASC`);
-            const sectionRes = await client.query(`SELECT section_id, section_name, class_id FROM sections ORDER BY class_id, section_name ASC`);
+            const classRes = await client.query(`SELECT class_id, class_name, COALESCE(class_order, class_id) AS class_order FROM classes ORDER BY COALESCE(class_order, class_id) ASC, class_name ASC`);
+            const sectionRes = await client.query(`
+                SELECT s.section_id, s.section_name, s.class_id,
+                       COALESCE(c.class_order, c.class_id) AS class_order,
+                       COALESCE(s.section_order, s.section_id) AS section_order
+                FROM sections s
+                JOIN classes c ON s.class_id = c.class_id
+                ORDER BY COALESCE(c.class_order, c.class_id) ASC, COALESCE(s.section_order, s.section_id) ASC, s.section_name ASC
+            `);
             classes = classRes.rows;
             sections = sectionRes.rows;
         } else {
@@ -400,12 +418,14 @@ router.get('/context/class-teacher', async (req, res) => {
             const scopeRes = await client.query(
                 `SELECT DISTINCT
                     c.class_id, c.class_name,
-                    sec.section_id, sec.section_name
+                    sec.section_id, sec.section_name,
+                    COALESCE(c.class_order, c.class_id) AS class_order,
+                    COALESCE(sec.section_order, sec.section_id) AS section_order
                  FROM teacher_class_assignment tca
                  JOIN classes c ON c.class_id = tca.class_id
                  JOIN sections sec ON sec.section_id = tca.section_id
                  WHERE tca.employee_id = $1 AND tca.is_class_teacher = true
-                 ORDER BY class_name, section_name`,
+                 ORDER BY class_order ASC, section_order ASC, class_name, section_name`,
                 [ctx.employeeId]
             );
 
@@ -1506,8 +1526,15 @@ router.get('/tests/context', async (req, res) => {
 
         // Admin (>=90) and Supervisor (>=65) can see all classes
         if (ctx.isAdmin || ctx.isSupervisor) {
-            const classRes = await client.query(`SELECT class_id, class_name FROM classes ORDER BY class_name ASC`);
-            const sectionRes = await client.query(`SELECT section_id, section_name, class_id FROM sections ORDER BY class_id, section_name ASC`);
+            const classRes = await client.query(`SELECT class_id, class_name, COALESCE(class_order, class_id) AS class_order FROM classes ORDER BY COALESCE(class_order, class_id) ASC, class_name ASC`);
+            const sectionRes = await client.query(`
+                SELECT s.section_id, s.section_name, s.class_id,
+                       COALESCE(c.class_order, c.class_id) AS class_order,
+                       COALESCE(s.section_order, s.section_id) AS section_order
+                FROM sections s
+                JOIN classes c ON s.class_id = c.class_id
+                ORDER BY COALESCE(c.class_order, c.class_id) ASC, COALESCE(s.section_order, s.section_id) ASC, s.section_name ASC
+            `);
             const subjectRes = await client.query(
                 `SELECT s.subject_id, s.subject_name, s.subject_code,
                         sec.section_id, sec.section_name,
@@ -1515,7 +1542,7 @@ router.get('/tests/context', async (req, res) => {
                  FROM subjects s
                  JOIN sections sec ON sec.section_id = s.section_id
                  JOIN classes c ON c.class_id = sec.class_id
-                 ORDER BY c.class_name, sec.section_name, s.subject_name`
+                 ORDER BY COALESCE(c.class_order, c.class_id) ASC, COALESCE(sec.section_order, sec.section_id) ASC, c.class_name, sec.section_name, s.subject_name`
             );
             classes = classRes.rows;
             sections = sectionRes.rows;
@@ -1528,7 +1555,9 @@ router.get('/tests/context', async (req, res) => {
                 `SELECT DISTINCT
                     c.class_id, c.class_name,
                     sec.section_id, sec.section_name,
-                    s.subject_id, s.subject_name, s.subject_code
+                    s.subject_id, s.subject_name, s.subject_code,
+                    COALESCE(c.class_order, c.class_id) AS class_order,
+                    COALESCE(sec.section_order, sec.section_id) AS section_order
                  FROM teacher_subject_assignment tsa
                  JOIN subjects s ON s.subject_id = tsa.subject_id
                  JOIN sections sec ON sec.section_id = s.section_id
@@ -1540,13 +1569,15 @@ router.get('/tests/context', async (req, res) => {
                  SELECT DISTINCT
                     c.class_id, c.class_name,
                     sec.section_id, sec.section_name,
-                    NULL::int as subject_id, NULL::varchar as subject_name, NULL::varchar as subject_code
+                    NULL::int as subject_id, NULL::varchar as subject_name, NULL::varchar as subject_code,
+                    COALESCE(c.class_order, c.class_id) AS class_order,
+                    COALESCE(sec.section_order, sec.section_id) AS section_order
                  FROM teacher_class_assignment tca
                  JOIN classes c ON c.class_id = tca.class_id
                  JOIN sections sec ON sec.section_id = tca.section_id
                  WHERE tca.employee_id = $1 AND tca.is_class_teacher = true
 
-                 ORDER BY class_name, section_name, subject_name`,
+                 ORDER BY class_order ASC, section_order ASC, class_name, section_name, subject_name`,
                 [ctx.employeeId]
             );
             const classMap = new Map(), sectionMap = new Map();
@@ -1906,7 +1937,7 @@ router.get('/approvals/list', async (req, res) => {
             LEFT JOIN app_users u_app ON u_app.id = esa.approved_by
             LEFT JOIN app_users u_pub ON u_pub.id = esa.published_by
             GROUP BY em.term_id, t.term_name, t.academic_year_id, ay.year_name, em.class_id, c.class_name, em.section_id, sec.section_name, em.subject_id, sub.subject_name, esa.status, esa.submitted_at, esa.approved_at, esa.published_at, u_sub.full_name, u_sub.username, u_app.full_name, u_pub.full_name
-            ORDER BY c.class_name ASC, sec.section_name ASC, t.term_name ASC, sub.subject_name ASC
+            ORDER BY COALESCE(c.class_order, c.class_id) ASC, COALESCE(sec.section_order, sec.section_id) ASC, t.term_name ASC, sub.subject_name ASC
         `);
 
         // 2. Class Test Sheets

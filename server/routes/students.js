@@ -1787,7 +1787,7 @@ router.get('/', async (req, res) => {
             paramCount++;
         }
 
-        query += ` ORDER BY s.class_id NULLS LAST, s.section_id NULLS LAST, s.roll_no NULLS LAST, s.first_name`;
+        query += ` ORDER BY COALESCE(c.class_order, c.class_id) NULLS LAST, COALESCE(sec.section_order, sec.section_id) NULLS LAST, s.roll_no NULLS LAST, s.first_name`;
 
         const result = await pool.query(query, params);
         res.json(result.rows);

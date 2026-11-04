@@ -32,7 +32,7 @@ router.get('/students', async (req, res) => {
         if (class_id) { query += ` AND s.class_id = $${idx++}`; params.push(class_id); }
         if (section_id) { query += ` AND s.section_id = $${idx++}`; params.push(section_id); }
 
-        query += ` ORDER BY c.class_name, sec.section_name, s.first_name, s.last_name`;
+        query += ` ORDER BY COALESCE(c.class_order, c.class_id) ASC, COALESCE(sec.section_order, sec.section_id) ASC, c.class_name, sec.section_name, s.first_name, s.last_name`;
 
         const result = await pool.query(query, params);
 
@@ -103,7 +103,7 @@ router.get('/results', async (req, res) => {
         if (section_id) { query += ` AND s.section_id = $${idx++}`; params.push(section_id); }
 
         query += ` GROUP BY s.student_id, s.admission_no, s.roll_no, s.first_name, s.last_name, c.class_name, sec.section_name`;
-        query += ` ORDER BY c.class_name, sec.section_name, s.first_name`;
+        query += ` ORDER BY COALESCE(c.class_order, c.class_id) ASC, COALESCE(sec.section_order, sec.section_id) ASC, c.class_name, sec.section_name, s.first_name`;
 
         const result = await pool.query(query, params);
         res.json({ results: result.rows });
@@ -293,7 +293,7 @@ router.get('/family-fee', async (req, res) => {
             params.push(parseInt(head_id, 10));
         }
 
-        slipQuery += ` ORDER BY class_name, section_name, student_name`;
+        slipQuery += ` ORDER BY COALESCE(c.class_order, c.class_id) ASC, COALESCE(sec.section_order, sec.section_id) ASC, c.class_name, sec.section_name, student_name`;
 
         const slipsResult = await pool.query(slipQuery, params);
         let rawSlips = slipsResult.rows;
@@ -728,7 +728,7 @@ router.get('/monthly-tuition', async (req, res) => {
             params.push(parseInt(section_id.toString(), 10));
         }
 
-        slipQuery += ` ORDER BY c.class_name, sec.section_name, student_name`;
+        slipQuery += ` ORDER BY COALESCE(c.class_order, c.class_id) ASC, COALESCE(sec.section_order, sec.section_id) ASC, c.class_name, sec.section_name, student_name`;
 
         const slipsRes = await pool.query(slipQuery, params);
         let families = slipsRes.rows.map(r => {

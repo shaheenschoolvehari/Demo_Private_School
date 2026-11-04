@@ -1093,7 +1093,7 @@ router.get('/admission-fees', async (req, res) => {
         const { status, class_id, academic_year_id } = req.query;
         const activeYear = await getActiveAcademicYear(pool);
         const yearsRes = await pool.query("SELECT id, year_name, is_active, status, start_date, end_date FROM academic_years ORDER BY id DESC");
-        const classesRes = await pool.query("SELECT class_id, class_name FROM classes ORDER BY class_id ASC");
+        const classesRes = await pool.query("SELECT class_id, class_name, COALESCE(class_order, class_id) AS class_order FROM classes ORDER BY COALESCE(class_order, class_id) ASC, class_name ASC");
 
         let whereClause = '1=1';
         const params = [];

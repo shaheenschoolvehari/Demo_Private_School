@@ -34,6 +34,27 @@ type Section = { section_id: number; section_name: string; class_id: number; };
 // Using CSS variables defined in global.css
 // --primary-dark (#233D4D), --primary-teal (#215E61), --accent-orange (#FE7F2D)
 
+const sortClassesByPriority = (arr: any[]) => {
+    return [...arr].sort((a, b) => {
+        const oA = Number(a.class_order ?? a.class_id ?? 9999);
+        const oB = Number(b.class_order ?? b.class_id ?? 9999);
+        if (oA !== oB) return oA - oB;
+        return (a.class_name || '').localeCompare(b.class_name || '');
+    });
+};
+
+const sortSectionsByPriority = (arr: any[]) => {
+    return [...arr].sort((a, b) => {
+        const coA = Number(a.class_order ?? a.class_id ?? 9999);
+        const coB = Number(b.class_order ?? b.class_id ?? 9999);
+        if (coA !== coB) return coA - coB;
+        const soA = Number(a.section_order ?? a.section_id ?? 9999);
+        const soB = Number(b.section_order ?? b.section_id ?? 9999);
+        if (soA !== soB) return soA - soB;
+        return (a.section_name || '').localeCompare(b.section_name || '');
+    });
+};
+
 export default function TeacherAssign() {
     // --- Data State ---
     const [teachers, setTeachers] = useState<Teacher[]>([]);
@@ -98,8 +119,8 @@ export default function TeacherAssign() {
             else { console.error("Teachers data invalid:", teachersData); setTeachers([]); }
 
             if (Array.isArray(subjectsData)) setAllSubjects(subjectsData);
-            if (Array.isArray(classesData)) setClasses(classesData);
-            if (Array.isArray(sectionsData)) setSections(sectionsData);
+            if (Array.isArray(classesData)) setClasses(sortClassesByPriority(classesData));
+            if (Array.isArray(sectionsData)) setSections(sortSectionsByPriority(sectionsData));
 
         } catch (err: any) {
             console.error("Fetch Error:", err);
@@ -344,6 +365,21 @@ export default function TeacherAssign() {
                                                 </div>
                                             </div>
                                             <span className={`badge ${teacher.status === 'Active' ? 'bg-success' : 'bg-secondary'}`}>{teacher.status}</span>
+                                        </div>
+
+                                        <div className="mb-2">
+                                            <small className="text-uppercase fw-bold text-muted d-block" style={{ fontSize: '0.75rem' }}>Assigned Classes &amp; Sections</small>
+                                            <div className="d-flex flex-wrap gap-1 mt-1">
+                                                {teacher.assigned_classes?.length > 0 ? (
+                                                    teacher.assigned_classes.map((c, i) => (
+                                                        <span key={i} className="badge bg-light text-dark border d-inline-flex align-items-center gap-1 px-2 py-1" style={{ fontSize: '0.78rem' }}>
+                                                            <span className="fw-semibold" style={{ color: 'var(--primary-teal)' }}>{c.class_name}</span>
+                                                            {c.section_name && <span className="text-muted">({c.section_name})</span>}
+                                                            {c.is_class_teacher && <i className="bi bi-star-fill text-warning ms-0.5" title="Class Teacher"></i>}
+                                                        </span>
+                                                    ))
+                                                ) : <span className="text-muted small fst-italic">No classes assigned</span>}
+                                            </div>
                                         </div>
 
                                         <div className="mb-3">

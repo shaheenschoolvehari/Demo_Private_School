@@ -9,7 +9,7 @@ router.get('/', async (req, res) => {
             SELECT fp.*,
                 fp.applies_to_all,
                 (
-                    SELECT COALESCE(JSON_AGG(JSON_BUILD_OBJECT('class_id', c.class_id, 'class_name', c.class_name) ORDER BY c.class_name), '[]')
+                    SELECT COALESCE(JSON_AGG(JSON_BUILD_OBJECT('class_id', c.class_id, 'class_name', c.class_name) ORDER BY COALESCE(c.class_order, c.class_id) ASC, c.class_name), '[]')
                     FROM fee_plan_classes fpc
                     JOIN classes c ON fpc.class_id = c.class_id
                     WHERE fpc.plan_id = fp.plan_id

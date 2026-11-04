@@ -31,7 +31,9 @@ router.get('/', async (req, res) => {
                             'section_id', sec.section_id,
                             'section_name', sec.section_name,
                             'is_class_teacher', tca.is_class_teacher,
-                            'assignment_id', tca.assignment_id
+                            'assignment_id', tca.assignment_id,
+                            'class_order', COALESCE(c.class_order, c.class_id),
+                            'section_order', COALESCE(sec.section_order, sec.section_id)
                         )
                     ) FILTER (WHERE c.class_id IS NOT NULL),
                     '[]'
@@ -52,6 +54,22 @@ router.get('/', async (req, res) => {
         `;
         
         const result = await pool.query(query);
+
+        // Sort assigned_classes by priority order
+        result.rows.forEach(t => {
+            if (Array.isArray(t.assigned_classes)) {
+                t.assigned_classes.sort((a, b) => {
+                    const coA = Number(a.class_order ?? a.class_id ?? 9999);
+                    const coB = Number(b.class_order ?? b.class_id ?? 9999);
+                    if (coA !== coB) return coA - coB;
+                    const soA = Number(a.section_order ?? a.section_id ?? 9999);
+                    const soB = Number(b.section_order ?? b.section_id ?? 9999);
+                    if (soA !== soB) return soA - soB;
+                    return (a.section_name || '').localeCompare(b.section_name || '');
+                });
+            }
+        });
+
         res.json(result.rows);
     } catch (err) {
         console.error("Error fetching teachers:", err.message);
@@ -87,7 +105,9 @@ router.get('/:id', async (req, res) => {
                             'section_id', sec.section_id,
                             'section_name', sec.section_name,
                             'is_class_teacher', tca.is_class_teacher,
-                            'assignment_id', tca.assignment_id
+                            'assignment_id', tca.assignment_id,
+                            'class_order', COALESCE(c.class_order, c.class_id),
+                            'section_order', COALESCE(sec.section_order, sec.section_id)
                         )
                     ) FILTER (WHERE c.class_id IS NOT NULL),
                     '[]'
@@ -109,8 +129,21 @@ router.get('/:id', async (req, res) => {
         if (result.rows.length === 0) {
             return res.status(404).json({ error: "Teacher not found" });
         }
+
+        const teacherData = result.rows[0];
+        if (Array.isArray(teacherData.assigned_classes)) {
+            teacherData.assigned_classes.sort((a, b) => {
+                const coA = Number(a.class_order ?? a.class_id ?? 9999);
+                const coB = Number(b.class_order ?? b.class_id ?? 9999);
+                if (coA !== coB) return coA - coB;
+                const soA = Number(a.section_order ?? a.section_id ?? 9999);
+                const soB = Number(b.section_order ?? b.section_id ?? 9999);
+                if (soA !== soB) return soA - soB;
+                return (a.section_name || '').localeCompare(b.section_name || '');
+            });
+        }
         
-        res.json(result.rows[0]);
+        res.json(teacherData);
     } catch (err) {
         console.error("Error fetching teacher:", err.message);
         res.status(500).json({ error: "Server Error" });
