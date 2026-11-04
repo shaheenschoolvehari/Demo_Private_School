@@ -142,4 +142,84 @@ router.delete('/sections/:id', async (req, res) => {
     }
 });
 
+
+// ==========================================
+// PRIORITY SETTING API
+// ==========================================
+
+// GET /academic/priority — returns classes with sections, ordered by priority
+router.get('/priority', async (req, res) => {
+    try {
+        const classesResult = await pool.query(`
+            SELECT class_id, class_name, description, COALESCE(class_order, class_id) AS class_order
+            FROM classes
+            ORDER BY COALESCE(class_order, 9999), class_id ASC
+        `);
+
+        const sectionsResult = await pool.query(`
+            SELECT section_id, section_name, class_id, COALESCE(section_order, section_id) AS section_order
+            FROM sections
+            ORDER BY class_id, COALESCE(section_order, 9999), section_id ASC
+        `);
+
+        // Group sections by class_id
+        const sectionsByClass = {};
+        for (const sec of sectionsResult.rows) {
+            if (!sectionsByClass[sec.class_id]) sectionsByClass[sec.class_id] = [];
+            sectionsByClass[sec.class_id].push(sec);
+        }
+
+        const classes = classesResult.rows.map(cls => ({
+            ...cls,
+            sections: sectionsByClass[cls.class_id] || []
+        }));
+
+        res.json(classes);
+    } catch (err) {
+        console.error('Priority GET error:', err.message);
+        res.status(500).json({ error: 'Server Error: ' + err.message });
+    }
+});
+
+// PUT /academic/priority — batch-update class_order and section_order
+router.put('/priority', async (req, res) => {
+    const client = await pool.connect();
+    try {
+        const { classes } = req.body;
+        if (!Array.isArray(classes)) {
+            return res.status(400).json({ error: 'classes array is required' });
+        }
+
+        await client.query('BEGIN');
+
+        for (const cls of classes) {
+            if (cls.class_id == null || cls.class_order == null) continue;
+            await client.query(
+                'UPDATE classes SET class_order = $1 WHERE class_id = $2',
+                [cls.class_order, cls.class_id]
+            );
+
+            if (Array.isArray(cls.sections)) {
+                for (const sec of cls.sections) {
+                    if (sec.section_id == null || sec.section_order == null) continue;
+                    await client.query(
+                        'UPDATE sections SET section_order = $1 WHERE section_id = $2',
+                        [sec.section_order, sec.section_id]
+                    );
+                }
+            }
+        }
+
+        await client.query('COMMIT');
+        res.json({ success: true, message: 'Priority saved successfully' });
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error('Priority PUT error:', err.message);
+        res.status(500).json({ error: 'Server Error: ' + err.message });
+    } finally {
+        client.release();
+    }
+});
+
 module.exports = router;
+

@@ -148,7 +148,7 @@ const NAV_GROUPS: NavGroup[] = [
   },
   {
     key: 'academic', label: 'Academic', icon: 'bi-mortarboard-fill', href: '/academic/classes', permission: 'academic',
-    subs: [{ label: 'Class Setting', href: '/academic/classes' }, { label: 'Section Setting', href: '/academic/sections' }, { label: 'Subject Setting', href: '/academic/subjects' }, { label: 'Teacher Assign', href: '/academic/teachers' }, { label: 'Student Promotion', href: '/academic/promotion' }]
+    subs: [{ label: 'Class Setting', href: '/academic/classes' }, { label: 'Section Setting', href: '/academic/sections' }, { label: 'Subject Setting', href: '/academic/subjects' }, { label: 'Teacher Assign', href: '/academic/teachers' }, { label: 'Student Promotion', href: '/academic/promotion' }, { label: 'Priority Setting', href: '/academic/priority' }]
   },
   {
     key: 'hrm', label: 'HR Management', icon: 'bi-person-badge-fill', href: '/hrm', permission: 'hrm',
@@ -196,6 +196,7 @@ const NAV_PERMISSION_MAP: Record<string, string> = {
   '/academic/subjects': 'academic.subjects',
   '/academic/teachers': 'academic.teachers',
   '/academic/promotion': 'academic.promotion',
+  '/academic/priority': 'academic',
   '/examination/marks': 'academic.examination',
   '/examination/result-card': 'academic.result-card',
   '/examination/marks-sheet': 'academic.marks-sheet',

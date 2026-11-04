@@ -454,6 +454,13 @@ async function runEssentialMigrations() {
             ALTER TABLE fee_payments ADD COLUMN IF NOT EXISTS advance_surplus NUMERIC(10,2) DEFAULT 0;
         `);
 
+
+        // 13. Priority Setting — class_order & section_order columns
+        console.log("   → Checking class_order and section_order columns...");
+        await client.query(`
+            ALTER TABLE classes ADD COLUMN IF NOT EXISTS class_order INTEGER;
+            ALTER TABLE sections ADD COLUMN IF NOT EXISTS section_order INTEGER;
+        `);
         const { syncAllSequences } = require('./utils/sequenceSync');
         await syncAllSequences(client);
 
