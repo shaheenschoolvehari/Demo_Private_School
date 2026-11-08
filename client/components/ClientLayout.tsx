@@ -8,6 +8,7 @@ import 'react-toastify/dist/ReactToastify.css';
 import { useAuth } from '@/contexts/AuthContext';
 import { requestMobileNotificationPermissions, triggerNativeDeviceNotification, setupNativeNotificationActionListener } from '@/utils/nativeNotifications';
 import { NotificationBell } from '@/components/notifications/NotificationBell';
+import SupportAgentWidget from '@/components/agent/SupportAgentWidget';
 
 const API = process.env.NEXT_PUBLIC_API_URL || " https://demo-private-school.onrender.com";
 
@@ -725,6 +726,7 @@ export default function ClientLayout({ children }: { children: React.ReactNode }
         schoolSettings={schoolSettings}
       />
       <main className="sl-main">{children}</main>
+      <SupportAgentWidget user={user} />
       <ToastContainer position="top-right" autoClose={3000} hideProgressBar={false} newestOnTop={false} closeOnClick pauseOnFocusLoss draggable pauseOnHover theme="light" />
     </div>
   );
