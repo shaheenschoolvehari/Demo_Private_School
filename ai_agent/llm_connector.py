@@ -56,15 +56,17 @@ def generate_chat_completion(
             contents = []
             for h in history[-4:]:
                 role = "user" if h.get("sender") == "user" else "model"
+                if not contents and role == "model":
+                    continue
                 contents.append({"role": role, "parts": [{"text": h.get("text", "")}]})
             contents.append({"role": "user", "parts": [{"text": user_message}]})
 
             payload = {
                 "contents": contents,
                 "systemInstruction": {"parts": [{"text": system_prompt}]},
-                "generationConfig": {"temperature": temp, "maxOutputTokens": 1024}
+                "generationConfig": {"temperature": temp, "maxOutputTokens": 4096}
             }
-            with httpx.Client(timeout=20.0) as client:
+            with httpx.Client(timeout=30.0) as client:
                 res = client.post(url, json=payload)
                 if res.status_code == 200:
                     data = res.json()
@@ -90,12 +92,12 @@ def generate_chat_completion(
             }
             payload = {
                 "model": model,
-                "max_tokens": 1024,
+                "max_tokens": 4096,
                 "temperature": temp,
                 "system": system_prompt,
                 "messages": messages
             }
-            with httpx.Client(timeout=20.0) as client:
+            with httpx.Client(timeout=30.0) as client:
                 res = client.post(url, headers=headers, json=payload)
                 if res.status_code == 200:
                     data = res.json()
@@ -133,7 +135,7 @@ def generate_chat_completion(
                 "model": model,
                 "messages": messages,
                 "temperature": temp,
-                "max_tokens": 1024
+                "max_tokens": 4096
             }
             with httpx.Client(timeout=25.0) as client:
                 res = client.post(url, headers=headers, json=payload)
@@ -147,3 +149,4 @@ def generate_chat_completion(
         print(f"[DYNAMIC LLM CALL FAILED]: {e}")
 
     return None
+

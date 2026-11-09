@@ -13,6 +13,7 @@ interface ChatMessage {
     isRefusal?: boolean;
     pageLinks?: { label: string; href: string }[];
     roleTag?: string;
+    isStreaming?: boolean;
 }
 
 // ─── Route Knowledge Dictionary ──────────────────────────────────────────────
@@ -232,7 +233,22 @@ export default function SupportAgentWidget({ user: propUser }: { user?: AuthUser
         return basePrompts.slice(0, 4);
     }, [pathname, roleLevel]);
 
-    // ─── Handle Sending Message ────────────────────────────────────────────────
+    // ─── Token Resolver ────────────────────────────────────────────────────────
+    const getSessionToken = () => {
+        if (user?.token) return user.token;
+        if (typeof window !== 'undefined') {
+            try {
+                const s = sessionStorage.getItem('sms_user_session') || localStorage.getItem('sms_remember_session') || localStorage.getItem('sms_offline_user_session');
+                if (s) {
+                    const parsed = JSON.parse(s);
+                    return parsed.token || '';
+                }
+            } catch {}
+        }
+        return '';
+    };
+
+    // ─── Handle Sending Message with Deep Streaming ─────────────────────────────
     const handleSend = async (queryText?: string) => {
         const textToSend = (queryText || input).trim();
         if (!textToSend || isTyping) return;
@@ -244,13 +260,27 @@ export default function SupportAgentWidget({ user: propUser }: { user?: AuthUser
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
         };
 
-        setMessages(prev => [...prev, userMsg]);
+        const agentMsgId = 'agent-' + Date.now();
+        const placeholderAgentMsg: ChatMessage = {
+            id: agentMsgId,
+            sender: 'agent',
+            text: '',
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            roleTag: userRole,
+            isStreaming: true
+        };
+
+        setMessages(prev => [...prev, userMsg, placeholderAgentMsg]);
         setInput('');
         setIsTyping(true);
 
+        const token = getSessionToken();
+        let accumulatedText = '';
+        let streamDone = false;
+
         try {
-            const token = user?.token;
-            const res = await fetch(`${API}/agent/chat`, {
+            // ── 1. Connect to Deep Streaming SSE Endpoint ──
+            const res = await fetch(`${API}/agent/chat/stream`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -265,35 +295,112 @@ export default function SupportAgentWidget({ user: propUser }: { user?: AuthUser
                 })
             });
 
-            if (res.ok) {
-                const data = await res.json();
-                const agentReply: ChatMessage = {
-                    id: `agent-${Date.now()}`,
-                    sender: 'agent',
-                    text: data.response || "No response received.",
-                    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                    roleTag: data.role_name || userRole
-                };
-                setMessages(prev => [...prev, agentReply]);
-            } else {
-                // If backend agent service returns error or refusal
-                const errData = await res.json().catch(() => ({}));
-                const agentReply: ChatMessage = {
-                    id: `agent-${Date.now()}`,
-                    sender: 'agent',
-                    text: errData.error || generateMockResponse(textToSend, userRole, roleLevel, pathname).text,
-                    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                    roleTag: userRole
-                };
-                setMessages(prev => [...prev, agentReply]);
+            if (res.ok && res.body) {
+                const reader = res.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+
+                    for (const line of lines) {
+                        const trimmed = line.trim();
+                        if (trimmed.startsWith('data: ')) {
+                            const jsonStr = trimmed.slice(6).trim();
+                            if (!jsonStr) continue;
+                            try {
+                                const parsed = JSON.parse(jsonStr);
+                                if (parsed.chunk) {
+                                    accumulatedText += parsed.chunk;
+                                    setMessages(prev => prev.map(m => m.id === agentMsgId ? {
+                                        ...m,
+                                        text: accumulatedText,
+                                        isRefusal: parsed.isRefusal || m.isRefusal
+                                    } : m));
+                                    scrollToBottom();
+                                }
+                                if (parsed.done) {
+                                    streamDone = true;
+                                    const detectedLinks = extractPageLinks(accumulatedText);
+                                    setMessages(prev => prev.map(m => m.id === agentMsgId ? {
+                                        ...m,
+                                        isStreaming: false,
+                                        roleTag: parsed.role_name || m.roleTag,
+                                        pageLinks: detectedLinks.length > 0 ? detectedLinks : m.pageLinks
+                                    } : m));
+                                }
+                            } catch (e) {}
+                        }
+                    }
+                }
             }
+
+            // ── 2. Fallback to /chat or mock if stream produced no text ──
+            if (!accumulatedText.trim()) {
+                const fallbackRes = await fetch(`${API}/agent/chat`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+                    },
+                    body: JSON.stringify({
+                        message: textToSend,
+                        history: messages.slice(-6).map(m => ({ sender: m.sender, text: m.text }))
+                    })
+                });
+
+                if (fallbackRes.ok) {
+                    const data = await fallbackRes.json();
+                    accumulatedText = data.response || "No response received.";
+                    const links = extractPageLinks(accumulatedText);
+                    setMessages(prev => prev.map(m => m.id === agentMsgId ? {
+                        ...m,
+                        text: accumulatedText,
+                        isStreaming: false,
+                        roleTag: data.role_name || userRole,
+                        pageLinks: links.length > 0 ? links : m.pageLinks
+                    } : m));
+                } else {
+                    const mock = generateMockResponse(textToSend, userRole, roleLevel, pathname);
+                    setMessages(prev => prev.map(m => m.id === agentMsgId ? {
+                        ...m,
+                        text: mock.text,
+                        isStreaming: false,
+                        pageLinks: mock.pageLinks,
+                        isRefusal: mock.isRefusal
+                    } : m));
+                }
+            } else if (!streamDone) {
+                const links = extractPageLinks(accumulatedText);
+                setMessages(prev => prev.map(m => m.id === agentMsgId ? {
+                    ...m,
+                    isStreaming: false,
+                    pageLinks: links.length > 0 ? links : m.pageLinks
+                } : m));
+            }
+
         } catch (err) {
-            // Graceful client fallback in case server or agent service is offline
-            const agentReply = generateMockResponse(textToSend, userRole, roleLevel, pathname);
-            setMessages(prev => [...prev, agentReply]);
+            if (!accumulatedText.trim()) {
+                const mock = generateMockResponse(textToSend, userRole, roleLevel, pathname);
+                setMessages(prev => prev.map(m => m.id === agentMsgId ? {
+                    ...m,
+                    text: mock.text,
+                    isStreaming: false,
+                    pageLinks: mock.pageLinks,
+                    isRefusal: mock.isRefusal
+                } : m));
+            } else {
+                setMessages(prev => prev.map(m => m.id === agentMsgId ? { ...m, isStreaming: false } : m));
+            }
         } finally {
             setIsTyping(false);
             if (!isOpen) setHasUnread(true);
+            setTimeout(scrollToBottom, 50);
         }
     };
 
@@ -415,7 +522,15 @@ export default function SupportAgentWidget({ user: propUser }: { user?: AuthUser
                                                 </div>
                                             )}
                                             <div className={`agent-message-bubble ${msg.isRefusal ? 'msg-refusal' : ''}`}>
-                                                <div className="msg-text-content">{renderFormattedText(msg.text)}</div>
+                                                {msg.isStreaming && !msg.text ? (
+                                                    <div className="d-flex align-items-center py-1">
+                                                        <span className="typing-dot me-1"></span>
+                                                        <span className="typing-dot me-1"></span>
+                                                        <span className="typing-dot"></span>
+                                                    </div>
+                                                ) : (
+                                                    <div className="msg-text-content">{renderFormattedText(msg.text, msg.isStreaming)}</div>
+                                                )}
 
                                                 {msg.pageLinks && msg.pageLinks.length > 0 && (
                                                     <div className="msg-links-container">
@@ -441,7 +556,7 @@ export default function SupportAgentWidget({ user: propUser }: { user?: AuthUser
                                         </div>
                                     ))}
 
-                                    {isTyping && (
+                                    {isTyping && !messages.some(m => m.isStreaming) && (
                                         <div className="agent-message-row msg-agent">
                                             <div className="msg-avatar-icon">
                                                 <i className="bi bi-robot"></i>
@@ -801,6 +916,20 @@ export default function SupportAgentWidget({ user: propUser }: { user?: AuthUser
                 .typing-dot:nth-child(2) { animation-delay: 0.2s; }
                 .typing-dot:nth-child(3) { animation-delay: 0.4s; }
 
+                /* ─ Stream Blinking Cursor ─ */
+                @keyframes streamBlink {
+                    0%, 100% { opacity: 1; }
+                    50% { opacity: 0; }
+                }
+                .stream-cursor {
+                    display: inline-block;
+                    color: #215E61;
+                    font-weight: 800;
+                    animation: streamBlink 0.7s infinite ease-in-out;
+                    margin-left: 2px;
+                    line-height: 1;
+                }
+
                 /* ─ Quick Prompts ─ */
                 .agent-prompts-bar {
                     background: #fff;
@@ -963,28 +1092,117 @@ export default function SupportAgentWidget({ user: propUser }: { user?: AuthUser
     );
 }
 
-// ─── Formatting Helper ───────────────────────────────────────────────────────
-function renderFormattedText(text: string) {
-    // Basic formatting: bold **text**, bullet points, emojis
-    const lines = text.split('\n');
-    return (
-        <div>
-            {lines.map((line, i) => {
-                const isBullet = line.trim().startsWith('- ') || line.trim().startsWith('• ');
-                const cleanLine = isBullet ? line.trim().substring(2) : line;
+// ─── Route Links Extractor ──────────────────────────────────────────────────
+function extractPageLinks(text: string): { label: string; href: string }[] {
+    const links: { label: string; href: string }[] = [];
+    const routes = [
+        { path: '/academic/priority', label: 'Priority Setting' },
+        { path: '/academic/classes', label: 'Class Settings' },
+        { path: '/academic/sections', label: 'Section Settings' },
+        { path: '/academic/teachers', label: 'Teacher Assignments' },
+        { path: '/attendance/students', label: 'Student Attendance' },
+        { path: '/attendance/students/history', label: 'Attendance History' },
+        { path: '/attendance/settings/students', label: 'Attendance Settings' },
+        { path: '/examination/marks', label: 'Marks Entry' },
+        { path: '/examination/approvals', label: 'Marks Approval' },
+        { path: '/fees/collect', label: 'Fee Collection' },
+        { path: '/fees/generate', label: 'Generate Fee Slips' },
+        { path: '/fees/print', label: 'Print Fee Slips' },
+        { path: '/students/admission', label: 'New Admission' },
+        { path: '/students/details', label: 'Student Directory' },
+        { path: '/reports/monthly', label: 'Collection Reports' },
+        { path: '/settings/system', label: 'System Configuration' },
+        { path: '/settings/roles', label: 'Roles & RBAC' }
+    ];
+    for (const r of routes) {
+        if (text.includes(r.path) && !links.some(l => l.href === r.path)) {
+            links.push({ label: `Go to ${r.label}`, href: r.path });
+        }
+    }
+    return links.slice(0, 3);
+}
 
-                // Simple parser for **bold**
-                const parts = cleanLine.split(/(\*\*.*?\*\*)/g);
+// ─── Inline Formatting Parser (Handles `code` & **bold**) ───────────────────
+function renderInlineSpans(text: string) {
+    if (!text) return null;
+    const parts = text.split(/(`[^`]+`|\*\*[^*]+\*\*)/g);
+
+    return parts.map((part, idx) => {
+        if (part.startsWith('`') && part.endsWith('`') && part.length >= 2) {
+            return (
+                <code key={idx} className="px-1 py-0.5 rounded bg-light border text-danger small font-monospace">
+                    {part.slice(1, -1)}
+                </code>
+            );
+        }
+        if (part.startsWith('**') && part.endsWith('**') && part.length >= 4) {
+            return <strong key={idx} className="fw-bold text-dark">{part.slice(2, -2)}</strong>;
+        }
+        return <span key={idx}>{part}</span>;
+    });
+}
+
+// ─── Rich Formatting Helper with Bullet & Deep Stream Cursor Support ────────
+function renderFormattedText(text: string, isStreaming?: boolean) {
+    if (!text) {
+        return isStreaming ? <span className="stream-cursor">▌</span> : null;
+    }
+    const lines = text.split('\n');
+
+    return (
+        <div className="formatted-chat-text">
+            {lines.map((rawLine, i) => {
+                const line = rawLine.trim();
+
+                // Horizontal rule
+                if (line === '---' || line === '***') {
+                    return <hr key={i} className="my-2 border-secondary opacity-25" />;
+                }
+
+                // Header 3: ### Title
+                if (line.startsWith('### ')) {
+                    return (
+                        <div key={i} className="fw-bold fs-6 mt-2 mb-1 text-teal">
+                            {renderInlineSpans(line.replace(/^###\s*/, ''))}
+                        </div>
+                    );
+                }
+
+                // Header 2: ## Title
+                if (line.startsWith('## ')) {
+                    return (
+                        <div key={i} className="fw-bold fs-6 mt-2 mb-1 text-teal">
+                            {renderInlineSpans(line.replace(/^##\s*/, ''))}
+                        </div>
+                    );
+                }
+
+                // Bullet points: "* ", "- ", "• "
+                const isBullet = line.startsWith('* ') || line.startsWith('- ') || line.startsWith('• ');
+                // Numbered lists: "1. ", "2. ", etc.
+                const numberMatch = line.match(/^(\d+)\.\s+/);
+
+                let cleanLine = rawLine;
+                let bulletIcon = null;
+
+                if (isBullet) {
+                    cleanLine = line.replace(/^[\*\-•]\s*/, '');
+                    bulletIcon = <span className="me-1 text-teal fw-bold">•</span>;
+                } else if (numberMatch) {
+                    cleanLine = line.replace(/^\d+\.\s*/, '');
+                    bulletIcon = <span className="me-1 fw-semibold text-secondary">{numberMatch[1]}.</span>;
+                }
 
                 return (
-                    <div key={i} className={isBullet ? 'ps-3 mb-1' : 'mb-1'}>
-                        {isBullet && <span className="me-1 text-teal">•</span>}
-                        {parts.map((p, pIdx) => {
-                            if (p.startsWith('**') && p.endsWith('**')) {
-                                return <strong key={pIdx}>{p.slice(2, -2)}</strong>;
-                            }
-                            return <span key={pIdx}>{p}</span>;
-                        })}
+                    <div
+                        key={i}
+                        className={`${isBullet || numberMatch ? 'ps-3 mb-1' : rawLine.trim() === '' ? 'mb-2' : 'mb-1'} ${rawLine.trim() === '' ? 'empty-line' : ''}`}
+                    >
+                        {bulletIcon}
+                        {renderInlineSpans(cleanLine)}
+                        {isStreaming && i === lines.length - 1 && (
+                            <span className="stream-cursor">▌</span>
+                        )}
                     </div>
                 );
             })}

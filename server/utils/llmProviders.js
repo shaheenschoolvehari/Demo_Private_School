@@ -254,10 +254,12 @@ async function generateLLMResponse({
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${selectedModel}:generateContent?key=${apiKey.trim()}`;
 
         const contents = [];
-        // Add past conversation turns
+        // Add past conversation turns, ensuring conversation starts with a user turn
         for (const turn of conversationHistory.slice(-4)) {
+            const role = turn.sender === 'user' ? 'user' : 'model';
+            if (contents.length === 0 && role === 'model') continue;
             contents.push({
-                role: turn.sender === 'user' ? 'user' : 'model',
+                role,
                 parts: [{ text: turn.text }]
             });
         }
@@ -273,7 +275,7 @@ async function generateLLMResponse({
             },
             generationConfig: {
                 temperature: Number(temperature) || 0.3,
-                maxOutputTokens: 1024
+                maxOutputTokens: 4096
             }
         };
 
@@ -281,7 +283,7 @@ async function generateLLMResponse({
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
-            signal: AbortSignal.timeout(20000)
+            signal: AbortSignal.timeout(30000)
         });
 
         if (!res.ok) {
@@ -312,7 +314,7 @@ async function generateLLMResponse({
 
         const payload = {
             model: selectedModel,
-            max_tokens: 1024,
+            max_tokens: 4096,
             temperature: Number(temperature) || 0.3,
             system: systemPrompt,
             messages
@@ -326,7 +328,7 @@ async function generateLLMResponse({
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify(payload),
-            signal: AbortSignal.timeout(20000)
+            signal: AbortSignal.timeout(30000)
         });
 
         if (!res.ok) {
@@ -377,9 +379,9 @@ async function generateLLMResponse({
             model: selectedModel,
             messages,
             temperature: Number(temperature) || 0.3,
-            max_tokens: 1024
+            max_tokens: 4096
         }),
-        signal: AbortSignal.timeout(25000)
+        signal: AbortSignal.timeout(35000)
     });
 
     if (!res.ok) {
@@ -392,8 +394,235 @@ async function generateLLMResponse({
     return { text, provider: cleanProvider, model: selectedModel };
 }
 
+/**
+ * Executes a token-by-token / chunk-by-chunk deep stream from the selected provider.
+ * Yields text tokens in real time.
+ */
+async function* streamLLMResponse({
+    provider,
+    apiKey,
+    model,
+    customBaseUrl,
+    temperature = 0.3,
+    systemPrompt,
+    userMessage,
+    conversationHistory = []
+}) {
+    const cleanProvider = (provider || 'openai').toLowerCase();
+
+    // 1. Google Gemini SSE Streaming
+    if (cleanProvider === 'gemini') {
+        const selectedModel = model || 'gemini-2.0-flash';
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${selectedModel}:streamGenerateContent?alt=sse&key=${apiKey.trim()}`;
+
+        const contents = [];
+        for (const turn of conversationHistory.slice(-4)) {
+            const role = turn.sender === 'user' ? 'user' : 'model';
+            if (contents.length === 0 && role === 'model') continue;
+            contents.push({
+                role,
+                parts: [{ text: turn.text }]
+            });
+        }
+        contents.push({
+            role: 'user',
+            parts: [{ text: userMessage }]
+        });
+
+        const payload = {
+            contents,
+            systemInstruction: { parts: [{ text: systemPrompt }] },
+            generationConfig: {
+                temperature: Number(temperature) || 0.3,
+                maxOutputTokens: 4096
+            }
+        };
+
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+            signal: AbortSignal.timeout(40000)
+        });
+
+        if (!res.ok) {
+            const err = await res.text();
+            throw new Error(`Gemini stream error (${res.status}): ${err}`);
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop();
+
+            for (const line of lines) {
+                const trimmed = line.trim();
+                if (trimmed.startsWith('data: ')) {
+                    const jsonStr = trimmed.slice(6).trim();
+                    if (!jsonStr) continue;
+                    try {
+                        const parsed = JSON.parse(jsonStr);
+                        const chunk = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
+                        if (chunk) yield chunk;
+                    } catch (e) {}
+                }
+            }
+        }
+        return;
+    }
+
+    // 2. Anthropic Claude SSE Streaming
+    if (cleanProvider === 'claude') {
+        const selectedModel = model || 'claude-3-5-sonnet-20241022';
+        const messages = [];
+
+        for (const turn of conversationHistory.slice(-4)) {
+            messages.push({
+                role: turn.sender === 'user' ? 'user' : 'assistant',
+                content: turn.text
+            });
+        }
+        messages.push({ role: 'user', content: userMessage });
+
+        const payload = {
+            model: selectedModel,
+            max_tokens: 4096,
+            temperature: Number(temperature) || 0.3,
+            system: systemPrompt,
+            messages,
+            stream: true
+        };
+
+        const res = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+                'x-api-key': apiKey.trim(),
+                'anthropic-version': '2023-06-01',
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(payload),
+            signal: AbortSignal.timeout(40000)
+        });
+
+        if (!res.ok) {
+            const err = await res.text();
+            throw new Error(`Claude stream error (${res.status}): ${err}`);
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop();
+
+            for (const line of lines) {
+                const trimmed = line.trim();
+                if (trimmed.startsWith('data: ')) {
+                    const jsonStr = trimmed.slice(6).trim();
+                    if (!jsonStr) continue;
+                    try {
+                        const parsed = JSON.parse(jsonStr);
+                        if (parsed.type === 'content_block_delta' && parsed.delta?.text) {
+                            yield parsed.delta.text;
+                        }
+                    } catch (e) {}
+                }
+            }
+        }
+        return;
+    }
+
+    // 3. OpenAI-Compatible SSE Streaming (OpenAI, OpenRouter, Grok, Kimi, Groq, Custom)
+    let baseUrl = customBaseUrl?.trim();
+    if (!baseUrl) {
+        if (cleanProvider === 'openai') baseUrl = 'https://api.openai.com/v1';
+        else if (cleanProvider === 'openrouter') baseUrl = 'https://openrouter.ai/api/v1';
+        else if (cleanProvider === 'grok') baseUrl = 'https://api.x.ai/v1';
+        else if (cleanProvider === 'kimi') baseUrl = 'https://api.moonshot.cn/v1';
+        else if (cleanProvider === 'groq') baseUrl = 'https://api.groq.com/openai/v1';
+        else baseUrl = 'https://api.openai.com/v1';
+    }
+
+    const messages = [{ role: 'system', content: systemPrompt }];
+    for (const turn of conversationHistory.slice(-4)) {
+        messages.push({
+            role: turn.sender === 'user' ? 'user' : 'assistant',
+            content: turn.text
+        });
+    }
+    messages.push({ role: 'user', content: userMessage });
+
+    const selectedModel = model || PROVIDER_METADATA[cleanProvider]?.defaultModel || 'gpt-4o-mini';
+
+    const headers = { 'Content-Type': 'application/json' };
+    if (apiKey) {
+        headers['Authorization'] = `Bearer ${apiKey.trim()}`;
+    }
+    if (cleanProvider === 'openrouter') {
+        headers['HTTP-Referer'] = 'https://shaheenschool.edu';
+        headers['X-Title'] = 'SMS Role-Aware AI Agent';
+    }
+
+    const res = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+            model: selectedModel,
+            messages,
+            temperature: Number(temperature) || 0.3,
+            max_tokens: 4096,
+            stream: true
+        }),
+        signal: AbortSignal.timeout(45000)
+    });
+
+    if (!res.ok) {
+        const err = await res.text();
+        throw new Error(`${cleanProvider} stream error (${res.status}): ${err}`);
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop();
+
+        for (const line of lines) {
+            const trimmed = line.trim();
+            if (trimmed.startsWith('data: ')) {
+                const jsonStr = trimmed.slice(6).trim();
+                if (jsonStr === '[DONE]') return;
+                if (!jsonStr) continue;
+                try {
+                    const parsed = JSON.parse(jsonStr);
+                    const chunk = parsed.choices?.[0]?.delta?.content;
+                    if (chunk) yield chunk;
+                } catch (e) {}
+            }
+        }
+    }
+}
+
 module.exports = {
     PROVIDER_METADATA,
     fetchModelsForProvider,
-    generateLLMResponse
+    generateLLMResponse,
+    streamLLMResponse
 };
+

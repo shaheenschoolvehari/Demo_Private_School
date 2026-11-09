@@ -1,7 +1,7 @@
 const router = require('express').Router();
 const jwt = require('jsonwebtoken');
 const pool = require('../db');
-const { generateLLMResponse } = require('../utils/llmProviders');
+const { generateLLMResponse, streamLLMResponse } = require('../utils/llmProviders');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'shaheen_school_jwt_secret_key_2026_secure';
 const AGENT_BACKEND_URL = process.env.AGENT_BACKEND_URL || 'http://127.0.0.1:8000';
@@ -455,6 +455,270 @@ ${finalChunks.map(c => `[${c.title}]: ${c.content}`).join('\n\n')}`;
     } catch (err) {
         console.error('[AGENT CHAT FATAL ERROR]:', err);
         return res.status(500).json({ error: 'Internal Server Error', message: err.message });
+    }
+});
+
+// ── SSE Streaming Route: POST /agent/chat/stream ──
+router.post('/chat/stream', async (req, res) => {
+    // 1. Set SSE headers
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders?.();
+
+    const sendEvent = (obj) => {
+        res.write(`data: ${JSON.stringify(obj)}\n\n`);
+    };
+
+    try {
+        const authHeader = req.headers.authorization;
+        if (!authHeader) {
+            sendEvent({ error: 'Unauthorized: Missing Authorization header', done: true });
+            return res.end();
+        }
+
+        const token = authHeader.replace('Bearer ', '').trim();
+        let decoded;
+        try {
+            decoded = jwt.verify(token, JWT_SECRET);
+        } catch (jwtErr) {
+            sendEvent({ error: 'Unauthorized: Invalid or expired token', done: true });
+            return res.end();
+        }
+
+        const { message, history } = req.body;
+        if (!message || typeof message !== 'string' || !message.trim()) {
+            sendEvent({ error: 'Message is required', done: true });
+            return res.end();
+        }
+        const cleanMsg = message.trim();
+        const userId = decoded.id;
+        const userCtx = await fetchUserPermissions(userId);
+
+        if (!userCtx || !userCtx.is_active) {
+            sendEvent({
+                chunk: '🔒 Your user account is inactive or disabled. Please contact the administrator.',
+                access_granted: false,
+                isRefusal: true,
+                done: true
+            });
+            return res.end();
+        }
+
+        // Check Prompt Injection
+        if (detectInjection(cleanMsg)) {
+            await logAuditDenial(userId, userCtx.role_name, userCtx.role_level, 'security_violation', cleanMsg, 'Prompt injection pattern detected');
+            sendEvent({
+                chunk: '⚠️ Request Denied: Your input contains unauthorized instructions or security violation patterns. All queries are audited according to School IT Policy.',
+                access_granted: false,
+                isRefusal: true,
+                done: true
+            });
+            return res.end();
+        }
+
+        const lower = cleanMsg.toLowerCase();
+
+        // Helper to stream text smoothly in word bursts with short delays
+        const streamStaticText = async (text, meta = {}) => {
+            const words = text.split(/(\s+)/);
+            for (let i = 0; i < words.length; i += 4) {
+                const slice = words.slice(i, i + 4).join('');
+                sendEvent({ chunk: slice, access_granted: true, ...meta });
+                await new Promise(r => setTimeout(r, 12));
+            }
+            sendEvent({ done: true, access_granted: true, ...meta });
+            res.end();
+        };
+
+        // Live DB Tool Intents
+        // (A) My Classes
+        if (lower.includes('which class') || lower.includes('my class') || lower.includes('what class do i teach') || lower.includes('incharge')) {
+            const empRes = await pool.query('SELECT employee_id, first_name, last_name, designation FROM employees WHERE app_user_id = $1', [userId]);
+            if (empRes.rows.length > 0) {
+                const emp = empRes.rows[0];
+                const classesRes = await pool.query(`
+                    SELECT c.class_name, sec.section_name, tca.is_class_teacher
+                    FROM teacher_class_assignment tca
+                    JOIN classes c ON tca.class_id = c.class_id
+                    JOIN sections sec ON tca.section_id = sec.section_id
+                    WHERE tca.employee_id = $1
+                    ORDER BY c.class_name, sec.section_name
+                `, [emp.employee_id]);
+
+                const assigned = classesRes.rows.map(r => `${r.class_name} - Section ${r.section_name}`);
+                const incharge = classesRes.rows.filter(r => r.is_class_teacher).map(r => `${r.class_name} - Section ${r.section_name}`);
+
+                let text = `Hello **${emp.first_name} ${emp.last_name}** (${emp.designation || userCtx.role_name}),\n\n`;
+                text += `Here are your live class teaching assignments from the school database:\n\n`;
+                text += `📋 **Total Assigned Classes:** ${assigned.length}\n\n`;
+                if (assigned.length > 0) text += `**Assigned Classes & Sections:**\n` + assigned.map(c => `• ${c}`).join('\n') + `\n\n`;
+                if (incharge.length > 0) text += `⭐ **Designated Class Incharge:**\n` + incharge.map(c => `• ${c} *(Daily attendance & marksheet privileges active)*`).join('\n') + `\n`;
+                else text += `ℹ️ *You are currently not designated as a Class Incharge for any section.*\n`;
+
+                return streamStaticText(text, { requested_module: 'my_classes', role_name: userCtx.role_name });
+            }
+        }
+
+        // (B) My Notifications
+        if (lower.includes('notification') || lower.includes('alerts') || lower.includes('what do my notifications mean')) {
+            const roleTags = userCtx.role_level >= 90 ? ['admin', 'principal'] : ['staff', 'teacher'];
+            const notifsRes = await pool.query(`
+                SELECT title, message, created_at FROM notifications 
+                WHERE user_id = $1 OR LOWER(role) = ANY($2)
+                ORDER BY created_at DESC LIMIT 5
+            `, [userId, roleTags]);
+
+            let text = `Hello **${userCtx.full_name || userCtx.username}**,\n\nHere are your latest role-scoped notifications from the system:\n\n`;
+            if (notifsRes.rows.length === 0) {
+                text += '✅ You currently have no unread notifications or announcements.';
+            } else {
+                notifsRes.rows.forEach((n, i) => {
+                    text += `**${i + 1}. ✔️ ${n.title}**\n${n.message}\n\n`;
+                });
+            }
+            return streamStaticText(text, { requested_module: 'my_notifications', role_name: userCtx.role_name });
+        }
+
+        // (C) My Permissions
+        if (lower.includes('which pages can i access') || lower.includes('my permissions') || lower.includes('what can i access')) {
+            let text = `Hello **${userCtx.full_name || userCtx.username}**,\n\nHere is your active permissions matrix from PostgreSQL:\n\n`;
+            text += `• **Assigned Role:** ${userCtx.role_name} (Level ${userCtx.role_level})\n`;
+            text += `• **Total Accessible Modules:** ${userCtx.is_super_admin ? 'Full System' : userCtx.allowed_modules.length}\n\n`;
+            text += `**Permitted Modules:**\n`;
+            if (userCtx.is_super_admin) {
+                text += `• All system modules (Full Administrative & Executive Access)\n`;
+            } else {
+                userCtx.allowed_modules.slice(0, 15).forEach(m => { text += `• \`${m}\`\n`; });
+                if (userCtx.allowed_modules.length > 15) text += `• ... and ${userCtx.allowed_modules.length - 15} additional sub-modules.\n`;
+            }
+            return streamStaticText(text, { requested_module: 'my_permissions', role_name: userCtx.role_name });
+        }
+
+        // (D) Academic Session
+        if (lower.includes('academic year') || lower.includes('academic session') || lower.includes('which term')) {
+            const yrRes = await pool.query('SELECT year_name, start_date, end_date FROM academic_years WHERE is_active = true LIMIT 1');
+            const yr = yrRes.rows[0];
+            let text = `📅 **Active Academic Session:** ${yr ? yr.year_name : '2026-2027'}\n`;
+            if (yr && yr.start_date) text += `*Duration:* ${yr.start_date} to ${yr.end_date}\n\n`;
+            text += `**Configured Terms:**\n• First Term\n• Second Term\n• Final Term\n`;
+            return streamStaticText(text, { requested_module: 'academic_session', role_name: userCtx.role_name });
+        }
+
+        // (E) School Stats
+        if (lower.includes('how many students') || lower.includes('school stats') || lower.includes('overview stats')) {
+            if (userCtx.role_level < 75) {
+                sendEvent({
+                    chunk: `🔒 Access Restricted: You don't have permission to access school-wide operational statistics with your current role (${userCtx.role_name}).`,
+                    access_granted: false,
+                    isRefusal: true,
+                    done: true
+                });
+                return res.end();
+            }
+            const stuCount = await pool.query("SELECT COUNT(*) FROM students WHERE status = 'Active' OR status IS NULL");
+            const empCount = await pool.query("SELECT COUNT(*) FROM employees WHERE status = 'Active' OR status IS NULL");
+            const clsCount = await pool.query("SELECT COUNT(*) FROM classes");
+            const secCount = await pool.query("SELECT COUNT(*) FROM sections");
+
+            const text = `📊 **School Operational Directory Summary:**\n\n` +
+                `• **Active Enrolled Students:** ${Number(stuCount.rows[0].count).toLocaleString()}\n` +
+                `• **Active Teaching & Admin Staff:** ${Number(empCount.rows[0].count).toLocaleString()}\n` +
+                `• **Total Academic Classes:** ${clsCount.rows[0].count}\n` +
+                `• **Total Active Sections:** ${secCount.rows[0].count}\n`;
+            return streamStaticText(text, { requested_module: 'school_stats', role_name: userCtx.role_name });
+        }
+
+        // RBAC Module Access Check
+        const reqModule = detectRequestedModule(cleanMsg);
+        const hasAccess = checkModuleAccess(userCtx, reqModule);
+
+        if (!hasAccess) {
+            await logAuditDenial(userId, userCtx.role_name, userCtx.role_level, reqModule, cleanMsg, `Role '${userCtx.role_name}' lacks read permission for module '${reqModule}'`);
+            sendEvent({
+                chunk: `🔒 Access Restricted: You don't have permission to access the **${reqModule.replace('.', ' > ')}** module with your current role (${userCtx.role_name}).\n\nIf you require access to this feature for your duties, please contact your School Administrator to update your role permissions.`,
+                access_granted: false,
+                isRefusal: true,
+                done: true
+            });
+            return res.end();
+        }
+
+        // Retrieve Permitted Knowledge Chunks
+        const permittedChunks = KNOWLEDGE_CHUNKS.filter(c => checkModuleAccess(userCtx, c.module));
+        const matchedChunks = permittedChunks.filter(c => {
+            const queryWords = cleanMsg.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+            const content = (c.title + ' ' + c.content).toLowerCase();
+            return queryWords.some(w => content.includes(w));
+        });
+        const finalChunks = matchedChunks.length > 0 ? matchedChunks.slice(0, 3) : permittedChunks.slice(0, 2);
+
+        // Fetch LLM Settings
+        const llmSettingsRes = await pool.query(`
+            SELECT setting_key, setting_value 
+            FROM system_settings 
+            WHERE setting_key IN ('llm_provider', 'llm_api_key', 'llm_model', 'llm_temperature', 'llm_base_url', 'llm_is_enabled')
+        `);
+        const llmConfig = {};
+        llmSettingsRes.rows.forEach(r => { llmConfig[r.setting_key] = r.setting_value; });
+
+        const isLLMEnabled = llmConfig.llm_is_enabled === 'true';
+        const apiKey = llmConfig.llm_api_key;
+
+        if (isLLMEnabled && apiKey && apiKey.trim() !== '') {
+            try {
+                const systemPrompt = `You are the official Role-Aware AI Support Assistant for the School Management System.
+You are assisting user "${userCtx.full_name || userCtx.username}" whose active role is "${userCtx.role_name}" (Level ${userCtx.role_level}).
+STRICT RULES:
+1. Only provide instructions, workflows, and assistance permitted by the user's role and the following permitted context.
+2. NEVER mention or leak passwords, password hashes, secrets, or financial data outside their role.
+3. Be professional, concise, polite, and structure your answer with clear bullet points.
+
+PERMITTED CONTEXT:
+${finalChunks.map(c => `[${c.title}]: ${c.content}`).join('\n\n')}`;
+
+                for await (const chunk of streamLLMResponse({
+                    provider: llmConfig.llm_provider || 'gemini',
+                    apiKey: apiKey.trim(),
+                    model: llmConfig.llm_model,
+                    customBaseUrl: llmConfig.llm_base_url,
+                    temperature: Number(llmConfig.llm_temperature) || 0.3,
+                    systemPrompt,
+                    userMessage: cleanMsg,
+                    conversationHistory: Array.isArray(history) ? history : []
+                })) {
+                    sendEvent({ chunk, access_granted: true });
+                }
+
+                sendEvent({
+                    done: true,
+                    access_granted: true,
+                    requested_module: reqModule,
+                    role_name: userCtx.role_name,
+                    llm_used: `${llmConfig.llm_provider} (${llmConfig.llm_model})`
+                });
+                return res.end();
+
+            } catch (streamErr) {
+                console.error('[STREAMING LLM ERROR]:', streamErr.message);
+                // Fallback to static text streaming
+            }
+        }
+
+        // Fallback Structured Response (Streamed in bursts)
+        let fallbackText = `Hello **${userCtx.full_name || userCtx.username}** (${userCtx.role_name}),\n\n`;
+        fallbackText += `Here is the verified guidance for your query:\n\n`;
+        finalChunks.forEach(c => {
+            fallbackText += `### ${c.title}\n${c.content}\n\n`;
+        });
+        fallbackText += `If you need step-by-step assistance with another feature, let me know!`;
+
+        return streamStaticText(fallbackText, { requested_module: reqModule, role_name: userCtx.role_name });
+
+    } catch (err) {
+        console.error('[AGENT CHAT STREAM FATAL ERROR]:', err);
+        sendEvent({ error: 'Internal Server Error during stream: ' + err.message, done: true });
+        res.end();
     }
 });
 
