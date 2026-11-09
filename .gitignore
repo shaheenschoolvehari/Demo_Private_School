@@ -15,4 +15,8 @@ out/
 .vercel
 .vscode/
 *.tsbuildinfo
-ai_agent/venv
+ai_agent/venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+ai_agent/.env

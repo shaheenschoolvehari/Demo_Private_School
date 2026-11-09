@@ -115,6 +115,8 @@ const PAGE_GUIDES: Record<string, { title: string; summary: string; allowedRoles
     }
 };
 
+const API = process.env.NEXT_PUBLIC_API_URL || 'https://demo-private-school.onrender.com';
+
 // ─── Component ───────────────────────────────────────────────────────────────
 export default function SupportAgentWidget({ user: propUser }: { user?: AuthUser | null }) {
     const { user: authUser, isLoggedIn } = useAuth();
@@ -246,13 +248,53 @@ export default function SupportAgentWidget({ user: propUser }: { user?: AuthUser
         setInput('');
         setIsTyping(true);
 
-        // Simulate typing latency and fetch mock response
-        setTimeout(() => {
+        try {
+            const token = user?.token;
+            const res = await fetch(`${API}/agent/chat`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+                },
+                body: JSON.stringify({
+                    message: textToSend,
+                    history: messages.slice(-6).map(m => ({
+                        sender: m.sender,
+                        text: m.text
+                    }))
+                })
+            });
+
+            if (res.ok) {
+                const data = await res.json();
+                const agentReply: ChatMessage = {
+                    id: `agent-${Date.now()}`,
+                    sender: 'agent',
+                    text: data.response || "No response received.",
+                    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                    roleTag: data.role_name || userRole
+                };
+                setMessages(prev => [...prev, agentReply]);
+            } else {
+                // If backend agent service returns error or refusal
+                const errData = await res.json().catch(() => ({}));
+                const agentReply: ChatMessage = {
+                    id: `agent-${Date.now()}`,
+                    sender: 'agent',
+                    text: errData.error || generateMockResponse(textToSend, userRole, roleLevel, pathname).text,
+                    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                    roleTag: userRole
+                };
+                setMessages(prev => [...prev, agentReply]);
+            }
+        } catch (err) {
+            // Graceful client fallback in case server or agent service is offline
             const agentReply = generateMockResponse(textToSend, userRole, roleLevel, pathname);
             setMessages(prev => [...prev, agentReply]);
+        } finally {
             setIsTyping(false);
             if (!isOpen) setHasUnread(true);
-        }, 650);
+        }
     };
 
     const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {

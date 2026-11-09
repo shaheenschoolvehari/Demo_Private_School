@@ -59,6 +59,8 @@ app.use('/exams', require('./routes/exams'));
 app.use('/reports', require('./routes/reports'));
 // Notifications Module Route
 app.use('/notifications', require('./routes/notifications'));
+// Role-Aware AI Support Agent Route
+app.use('/agent', require('./routes/agent'));
 
 app.get('/', (req, res) => {
     res.send('Smart School System API is running');
