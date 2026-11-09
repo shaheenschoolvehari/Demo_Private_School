@@ -60,11 +60,28 @@ export default function SystemConfigPage() {
     const [restoring, setRestoring] = useState(false);
     const [resetting, setResetting] = useState(false);
 
+    // AI Agent & LLM Connectors State
+    const [llmProvider, setLlmProvider] = useState('gemini');
+    const [llmApiKey, setLlmApiKey] = useState('');
+    const [showApiKey, setShowApiKey] = useState(false);
+    const [llmModel, setLlmModel] = useState('gemini-2.0-flash');
+    const [llmTemperature, setLlmTemperature] = useState('0.3');
+    const [llmBaseUrl, setLlmBaseUrl] = useState('');
+    const [llmEnabled, setLlmEnabled] = useState(true);
+    const [hasApiKey, setHasApiKey] = useState(false);
+    const [availableModels, setAvailableModels] = useState<Array<{ id: string; name: string; recommended?: boolean }>>([]);
+    const [discoveringModels, setDiscoveringModels] = useState(false);
+    const [savingLLM, setSavingLLM] = useState(false);
+    const [testingAgent, setTestingAgent] = useState(false);
+    const [testAgentQuery, setTestAgentQuery] = useState('How do I mark daily student attendance?');
+    const [testAgentResponse, setTestAgentResponse] = useState<any>(null);
+
     useEffect(() => {
         fetchSettings();
         fetchStats();
         fetchBackups();
         fetchActiveSessions();
+        fetchLLMConfig();
     }, []);
 
     const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://demo-private-school.onrender.com";
@@ -81,6 +98,115 @@ export default function SystemConfigPage() {
             console.error('Failed to fetch active sessions', e);
         } finally {
             setLoadingSessions(false);
+        }
+    };
+
+    const fetchLLMConfig = async () => {
+        try {
+            const res = await fetch(`${API_URL}/system/llm/config`);
+            if (res.ok) {
+                const data = await res.json();
+                setLlmProvider(data.llm_provider || 'gemini');
+                setLlmModel(data.llm_model || 'gemini-2.0-flash');
+                setLlmTemperature(data.llm_temperature || '0.3');
+                setLlmBaseUrl(data.llm_base_url || '');
+                setLlmEnabled(data.llm_is_enabled === 'true');
+                setHasApiKey(!!data.has_api_key);
+                if (data.llm_api_key_masked) {
+                    setLlmApiKey(data.llm_api_key_masked);
+                }
+            }
+        } catch (e) {
+            console.error('Failed to load LLM config', e);
+        }
+    };
+
+    const handleDiscoverModels = async (prov = llmProvider, key = llmApiKey, url = llmBaseUrl) => {
+        if (!key && !hasApiKey && prov !== 'custom') {
+            showToast.error('Please enter an API key first.');
+            return;
+        }
+        setDiscoveringModels(true);
+        try {
+            const res = await fetch(`${API_URL}/system/llm/models`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    provider: prov,
+                    apiKey: key,
+                    customBaseUrl: url
+                })
+            });
+            const data = await res.json();
+            if (res.ok && data.models) {
+                setAvailableModels(data.models);
+                if (data.recommendedModel) {
+                    setLlmModel(data.recommendedModel);
+                }
+                showToast.success(`🎉 Connected! Discovered ${data.models.length} live models for ${prov.toUpperCase()}. Recommended model selected.`);
+            } else {
+                showToast.error(data.error || 'Failed to fetch models from provider.');
+            }
+        } catch (e: any) {
+            showToast.error('Connection failed: ' + e.message);
+        } finally {
+            setDiscoveringModels(false);
+        }
+    };
+
+    const handleSaveLLMConfig = async () => {
+        setSavingLLM(true);
+        try {
+            const res = await fetch(`${API_URL}/system/llm/config`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    llm_provider: llmProvider,
+                    llm_api_key: llmApiKey,
+                    llm_model: llmModel,
+                    llm_temperature: llmTemperature,
+                    llm_base_url: llmBaseUrl,
+                    llm_is_enabled: llmEnabled
+                })
+            });
+            const data = await res.json();
+            if (res.ok) {
+                showToast.success(data.message || 'AI Agent settings saved successfully!');
+                fetchLLMConfig();
+            } else {
+                showToast.error(data.error || 'Failed to save configuration');
+            }
+        } catch (e: any) {
+            showToast.error('Error saving LLM settings: ' + e.message);
+        } finally {
+            setSavingLLM(false);
+        }
+    };
+
+    const handleTestAgentPrompt = async () => {
+        if (!testAgentQuery.trim()) return;
+        setTestingAgent(true);
+        setTestAgentResponse(null);
+        try {
+            const session = sessionStorage.getItem('sms_user_session') || localStorage.getItem('sms_remember_session');
+            const token = session ? JSON.parse(session).token : '';
+            const res = await fetch(`${API_URL}/agent/chat`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+                },
+                body: JSON.stringify({ message: testAgentQuery })
+            });
+            const data = await res.json();
+            setTestAgentResponse(data);
+            if (data.access_granted) {
+                showToast.success('Test prompt completed successfully!');
+            }
+        } catch (e: any) {
+            showToast.error('Test prompt failed: ' + e.message);
+        } finally {
+            setTestingAgent(false);
         }
     };
 
@@ -387,6 +513,14 @@ export default function SystemConfigPage() {
                                 onClick={() => setActiveTab('maintenance')}
                             >
                                 <i className="bi bi-database-gear me-2"></i>Database & Maintenance
+                            </button>
+                        </li>
+                        <li className="nav-item">
+                            <button
+                                className={`nav-link ${activeTab === 'ai_agent' ? 'active fw-bold text-primary-dark' : 'text-muted'}`}
+                                onClick={() => setActiveTab('ai_agent')}
+                            >
+                                <i className="bi bi-robot me-2"></i>AI Support Agent (LLM)
                             </button>
                         </li>
                     </ul>
@@ -770,6 +904,313 @@ export default function SystemConfigPage() {
                                         </div>
                                     )}
                                 </div>
+                            </div>
+                        </div>
+                    )}
+                    {/* AI Support Agent & LLM Connectors Tab */}
+                    {activeTab === 'ai_agent' && (
+                        <div className="animate__animated animate__fadeIn">
+                            {/* Header Section */}
+                            <div className="d-flex flex-wrap align-items-center justify-content-between gap-3 mb-4 p-3 bg-light rounded-3 border">
+                                <div>
+                                    <h5 className="mb-1 text-primary-teal d-flex align-items-center gap-2">
+                                        <i className="bi bi-robot fs-4"></i>
+                                        <span>AI Support Agent &amp; LLM Multi-Provider Connectors</span>
+                                    </h5>
+                                    <p className="text-muted small mb-0">
+                                        Configure API keys and connect flagship models from Google Gemini, OpenAI, Claude, Grok, OpenRouter, or Kimi.
+                                    </p>
+                                </div>
+                                <div className="d-flex align-items-center gap-2">
+                                    <span className={`badge px-3 py-2 ${llmEnabled ? 'bg-success' : 'bg-secondary'}`}>
+                                        <i className={`bi ${llmEnabled ? 'bi-check-circle-fill' : 'bi-pause-circle-fill'} me-1`}></i>
+                                        {llmEnabled ? 'Agent Active' : 'Agent Paused'}
+                                    </span>
+                                    <div className="form-check form-switch ms-2">
+                                        <input
+                                            className="form-check-input"
+                                            type="checkbox"
+                                            role="switch"
+                                            id="llmEnableSwitch"
+                                            checked={llmEnabled}
+                                            onChange={e => setLlmEnabled(e.target.checked)}
+                                        />
+                                        <label className="form-check-label small fw-semibold" htmlFor="llmEnableSwitch">
+                                            Enable AI
+                                        </label>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Provider Selection Grid */}
+                            <div className="mb-4">
+                                <label className="form-label fw-bold text-dark d-flex align-items-center gap-2 mb-2">
+                                    <i className="bi bi-grid-fill text-primary"></i>
+                                    <span>Select LLM Provider Company:</span>
+                                </label>
+                                <div className="row g-3">
+                                    {[
+                                        { id: 'gemini', name: 'Google Gemini', badge: 'Recommended', icon: 'bi-google', desc: 'Fast, highly accurate, free tier' },
+                                        { id: 'openai', name: 'OpenAI', badge: 'Industry Standard', icon: 'bi-robot', desc: 'GPT-4o, GPT-4o-mini' },
+                                        { id: 'claude', name: 'Anthropic Claude', badge: 'High Reasoning', icon: 'bi-chat-heart', desc: 'Claude 3.5 Sonnet, Haiku' },
+                                        { id: 'openrouter', name: 'OpenRouter', badge: '200+ Models', icon: 'bi-cpu', desc: 'DeepSeek, Llama 3.3, Mistral' },
+                                        { id: 'grok', name: 'xAI Grok', badge: 'xAI', icon: 'bi-lightning-charge', desc: 'Grok-2, Grok-2-mini' },
+                                        { id: 'kimi', name: 'Kimi (Moonshot)', badge: 'Long Context', icon: 'bi-moon-stars', desc: 'Moonshot-v1-32k/128k' },
+                                        { id: 'groq', name: 'Groq', badge: 'Ultra-Fast', icon: 'bi-speedometer2', desc: 'Llama 3.3 70B (Sub-second)' },
+                                        { id: 'custom', name: 'Custom / Ollama', badge: 'Self-Hosted', icon: 'bi-hdd-network', desc: 'Local endpoint or private proxy' }
+                                    ].map(p => {
+                                        const isSelected = llmProvider === p.id;
+                                        return (
+                                            <div key={p.id} className="col-12 col-sm-6 col-md-3">
+                                                <div
+                                                    className={`card h-100 p-3 border-2 cursor-pointer transition-all ${
+                                                        isSelected ? 'border-primary bg-primary bg-opacity-10 shadow-sm' : 'border-light-subtle hover-shadow'
+                                                    }`}
+                                                    onClick={() => {
+                                                        setLlmProvider(p.id);
+                                                        setAvailableModels([]);
+                                                    }}
+                                                    style={{ cursor: 'pointer' }}
+                                                >
+                                                    <div className="d-flex justify-content-between align-items-start mb-2">
+                                                        <i className={`bi ${p.icon} fs-3 ${isSelected ? 'text-primary' : 'text-muted'}`}></i>
+                                                        <span className={`badge ${isSelected ? 'bg-primary' : 'bg-light text-dark border'}`} style={{ fontSize: '10px' }}>
+                                                            {p.badge}
+                                                        </span>
+                                                    </div>
+                                                    <div className="fw-bold mb-1" style={{ color: isSelected ? 'var(--bs-primary)' : 'inherit' }}>
+                                                        {p.name}
+                                                    </div>
+                                                    <small className="text-muted" style={{ fontSize: '11px' }}>{p.desc}</small>
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+
+                            {/* Credentials & Dynamic Model Discovery Form */}
+                            <div className="card border p-4 mb-4 bg-white rounded-3 shadow-sm">
+                                <div className="row g-4">
+                                    {/* API Key Field */}
+                                    <div className="col-12 col-md-7">
+                                        <div className="d-flex justify-content-between align-items-center mb-1">
+                                            <label className="form-label fw-bold mb-0">
+                                                <i className="bi bi-key-fill text-warning me-1"></i>
+                                                {llmProvider.toUpperCase()} API Key <span className="text-danger">*</span>
+                                            </label>
+                                            <small>
+                                                <a
+                                                    href={
+                                                        llmProvider === 'gemini' ? 'https://aistudio.google.com/app/apikey' :
+                                                        llmProvider === 'openai' ? 'https://platform.openai.com/api-keys' :
+                                                        llmProvider === 'claude' ? 'https://console.anthropic.com/settings/keys' :
+                                                        llmProvider === 'openrouter' ? 'https://openrouter.ai/keys' :
+                                                        llmProvider === 'grok' ? 'https://console.x.ai/' :
+                                                        llmProvider === 'kimi' ? 'https://platform.moonshot.cn/console/api-keys' :
+                                                        llmProvider === 'groq' ? 'https://console.groq.com/keys' : '#'
+                                                    }
+                                                    target="_blank"
+                                                    rel="noreferrer"
+                                                    className="text-decoration-none"
+                                                >
+                                                    Get API Key <i className="bi bi-box-arrow-up-right ms-1"></i>
+                                                </a>
+                                            </small>
+                                        </div>
+                                        <div className="input-group">
+                                            <input
+                                                type={showApiKey ? 'text' : 'password'}
+                                                className="form-control"
+                                                placeholder={
+                                                    llmProvider === 'gemini' ? 'AIzaSy...' :
+                                                    llmProvider === 'openai' ? 'sk-proj-...' :
+                                                    llmProvider === 'claude' ? 'sk-ant-...' :
+                                                    llmProvider === 'openrouter' ? 'sk-or-v1-...' :
+                                                    'Paste your API key here'
+                                                }
+                                                value={llmApiKey}
+                                                onChange={e => setLlmApiKey(e.target.value)}
+                                            />
+                                            <button
+                                                type="button"
+                                                className="btn btn-outline-secondary"
+                                                onClick={() => setShowApiKey(!showApiKey)}
+                                                title={showApiKey ? 'Hide' : 'Show'}
+                                            >
+                                                <i className={`bi ${showApiKey ? 'bi-eye-slash' : 'bi-eye'}`}></i>
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className="btn btn-teal text-white fw-semibold"
+                                                onClick={() => handleDiscoverModels()}
+                                                disabled={discoveringModels}
+                                            >
+                                                {discoveringModels ? (
+                                                    <>
+                                                        <span className="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
+                                                        Connecting...
+                                                    </>
+                                                ) : (
+                                                    <>
+                                                        <i className="bi bi-magic me-1"></i>
+                                                        Discover Models
+                                                    </>
+                                                )}
+                                            </button>
+                                        </div>
+                                        <small className="text-muted d-block mt-1">
+                                            Click <strong>&quot;Discover Models&quot;</strong> to test your key live and auto-select the best flagship model.
+                                        </small>
+                                    </div>
+
+                                    {/* Model Selection Field */}
+                                    <div className="col-12 col-md-5">
+                                        <label className="form-label fw-bold mb-1">
+                                            <i className="bi bi-cpu-fill text-info me-1"></i>
+                                            Select Model (Auto-Discovered) <span className="text-danger">*</span>
+                                        </label>
+                                        {availableModels.length > 0 ? (
+                                            <select
+                                                className="form-select border-primary"
+                                                value={llmModel}
+                                                onChange={e => setLlmModel(e.target.value)}
+                                            >
+                                                {availableModels.map(m => (
+                                                    <option key={m.id} value={m.id}>
+                                                        {m.recommended ? '⭐ ' : ''}{m.name || m.id} {m.recommended ? '(Recommended)' : ''}
+                                                    </option>
+                                                ))}
+                                            </select>
+                                        ) : (
+                                            <input
+                                                type="text"
+                                                className="form-control"
+                                                placeholder="e.g. gemini-2.0-flash, gpt-4o-mini"
+                                                value={llmModel}
+                                                onChange={e => setLlmModel(e.target.value)}
+                                            />
+                                        )}
+                                        <small className="text-muted d-block mt-1">
+                                            {availableModels.length > 0 ? `Showing ${availableModels.length} models from live API.` : 'You can enter model identifier or click Discover Models.'}
+                                        </small>
+                                    </div>
+
+                                    {/* Optional Custom Base URL (for Custom, OpenRouter or local proxies) */}
+                                    {(llmProvider === 'custom' || llmProvider === 'openrouter') && (
+                                        <div className="col-12 col-md-8">
+                                            <label className="form-label fw-semibold">
+                                                <i className="bi bi-link-45deg me-1"></i>Custom API Base URL
+                                            </label>
+                                            <input
+                                                type="text"
+                                                className="form-control"
+                                                placeholder={llmProvider === 'openrouter' ? 'https://openrouter.ai/api/v1' : 'http://localhost:11434/v1'}
+                                                value={llmBaseUrl}
+                                                onChange={e => setLlmBaseUrl(e.target.value)}
+                                            />
+                                        </div>
+                                    )}
+
+                                    {/* Temperature Slider */}
+                                    <div className="col-12 col-md-4">
+                                        <label className="form-label fw-semibold d-flex justify-content-between">
+                                            <span>Temperature (Creativity vs Determinism)</span>
+                                            <span className="badge bg-secondary">{llmTemperature}</span>
+                                        </label>
+                                        <input
+                                            type="range"
+                                            className="form-range"
+                                            min="0.0"
+                                            max="1.0"
+                                            step="0.05"
+                                            value={llmTemperature}
+                                            onChange={e => setLlmTemperature(e.target.value)}
+                                        />
+                                        <small className="text-muted">Recommended: 0.2 - 0.4 for strict factual school assistance.</small>
+                                    </div>
+                                </div>
+
+                                {/* Save Button */}
+                                <div className="d-flex justify-content-end mt-4 pt-3 border-top">
+                                    <button
+                                        type="button"
+                                        className="btn btn-primary px-4 py-2 fw-semibold"
+                                        onClick={handleSaveLLMConfig}
+                                        disabled={savingLLM}
+                                    >
+                                        {savingLLM ? (
+                                            <>
+                                                <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+                                                Saving Configuration...
+                                            </>
+                                        ) : (
+                                            <>
+                                                <i className="bi bi-check2-circle me-2"></i>
+                                                Save AI Configuration
+                                            </>
+                                        )}
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* Live Sandbox Test Panel */}
+                            <div className="card border p-4 bg-light rounded-3">
+                                <h6 className="fw-bold mb-2 d-flex align-items-center gap-2">
+                                    <i className="bi bi-terminal-fill text-success"></i>
+                                    <span>Interactive LLM Sandbox (Test Live Agent Before Deployment)</span>
+                                </h6>
+                                <p className="small text-muted mb-3">
+                                    Ask a test question to verify that the API key, model connection, and role-scoped RBAC guardrails are working properly.
+                                </p>
+                                <div className="input-group mb-3">
+                                    <input
+                                        type="text"
+                                        className="form-control"
+                                        placeholder="Ask a test query (e.g. How do I mark student attendance?)"
+                                        value={testAgentQuery}
+                                        onChange={e => setTestAgentQuery(e.target.value)}
+                                        onKeyDown={e => { if (e.key === 'Enter') handleTestAgentPrompt(); }}
+                                    />
+                                    <button
+                                        type="button"
+                                        className="btn btn-dark"
+                                        onClick={handleTestAgentPrompt}
+                                        disabled={testingAgent}
+                                    >
+                                        {testingAgent ? (
+                                            <>
+                                                <span className="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
+                                                Generating...
+                                            </>
+                                        ) : (
+                                            <>
+                                                <i className="bi bi-send-fill me-1"></i>
+                                                Test Prompt
+                                            </>
+                                        )}
+                                    </button>
+                                </div>
+
+                                {testAgentResponse && (
+                                    <div className="p-3 bg-white rounded border mt-2">
+                                        <div className="d-flex justify-content-between align-items-center mb-2 pb-2 border-bottom">
+                                            <span className="badge bg-success">
+                                                <i className="bi bi-shield-check me-1"></i>
+                                                {testAgentResponse.access_granted ? 'Access Granted' : 'Access Restricted'}
+                                            </span>
+                                            {testAgentResponse.llm_used && (
+                                                <span className="badge bg-info text-dark">
+                                                    <i className="bi bi-cpu me-1"></i>
+                                                    Model: {testAgentResponse.llm_used}
+                                                </span>
+                                            )}
+                                        </div>
+                                        <div className="text-secondary small" style={{ whiteSpace: 'pre-wrap', lineHeight: '1.6' }}>
+                                            {testAgentResponse.response}
+                                        </div>
+                                    </div>
+                                )}
                             </div>
                         </div>
                     )}

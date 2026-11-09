@@ -328,4 +328,115 @@ router.post('/backup-notification/read', async (req, res) => {
     }
 });
 
+// ── Multi-Provider LLM & AI Agent Settings Endpoints ──
+const { PROVIDER_METADATA, fetchModelsForProvider } = require('../utils/llmProviders');
+
+// GET /system/llm/providers
+router.get('/llm/providers', (req, res) => {
+    res.json(Object.values(PROVIDER_METADATA));
+});
+
+// POST /system/llm/models (Dynamic live discovery of available models using supplied key)
+router.post('/llm/models', async (req, res) => {
+    try {
+        const { provider, apiKey, customBaseUrl } = req.body;
+        
+        let keyToUse = apiKey;
+        // If apiKey is empty or masked, attempt to retrieve from DB
+        if (!keyToUse || keyToUse.includes('...')) {
+            const dbKeyRes = await pool.query(
+                "SELECT setting_value FROM system_settings WHERE setting_key = 'llm_api_key' LIMIT 1"
+            );
+            if (dbKeyRes.rows.length > 0 && dbKeyRes.rows[0].setting_value) {
+                keyToUse = dbKeyRes.rows[0].setting_value;
+            }
+        }
+
+        const result = await fetchModelsForProvider(provider, keyToUse, customBaseUrl);
+        res.json(result);
+    } catch (err) {
+        console.error('[LLM MODELS ERROR]:', err.message);
+        res.status(400).json({ error: err.message });
+    }
+});
+
+// GET /system/llm/config
+router.get('/llm/config', async (req, res) => {
+    try {
+        const resSettings = await pool.query(`
+            SELECT setting_key, setting_value 
+            FROM system_settings 
+            WHERE setting_key IN ('llm_provider', 'llm_api_key', 'llm_model', 'llm_temperature', 'llm_base_url', 'llm_is_enabled')
+        `);
+        const config = {
+            llm_provider: 'gemini',
+            llm_model: 'gemini-2.0-flash',
+            llm_temperature: '0.3',
+            llm_base_url: '',
+            llm_is_enabled: 'false',
+            llm_api_key_masked: '',
+            has_api_key: false
+        };
+
+        resSettings.rows.forEach(r => {
+            if (r.setting_key === 'llm_api_key' && r.setting_value) {
+                const val = r.setting_value.trim();
+                if (val.length > 8) {
+                    config.llm_api_key_masked = val.slice(0, 4) + '...' + val.slice(-4);
+                } else {
+                    config.llm_api_key_masked = '********';
+                }
+                config.has_api_key = true;
+            } else {
+                config[r.setting_key] = r.setting_value;
+            }
+        });
+
+        res.json(config);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// POST /system/llm/config
+router.post('/llm/config', async (req, res) => {
+    try {
+        const {
+            llm_provider,
+            llm_api_key,
+            llm_model,
+            llm_temperature,
+            llm_base_url,
+            llm_is_enabled
+        } = req.body;
+
+        const updates = [
+            ['llm_provider', String(llm_provider || 'gemini')],
+            ['llm_model', String(llm_model || '')],
+            ['llm_temperature', String(llm_temperature || '0.3')],
+            ['llm_base_url', String(llm_base_url || '')],
+            ['llm_is_enabled', String(llm_is_enabled === true || llm_is_enabled === 'true')]
+        ];
+
+        // Only update API key if provided and not masked
+        if (llm_api_key && !llm_api_key.includes('...')) {
+            updates.push(['llm_api_key', String(llm_api_key.trim())]);
+        }
+
+        for (const [key, val] of updates) {
+            await pool.query(
+                `INSERT INTO system_settings (setting_key, setting_value, category, description)
+                 VALUES ($1, $2, 'ai_agent', 'AI Support Agent LLM Configuration')
+                 ON CONFLICT (setting_key) DO UPDATE SET setting_value = $2, updated_at = CURRENT_TIMESTAMP`,
+                [key, val]
+            );
+        }
+
+        res.json({ message: 'AI Agent LLM Configuration saved successfully.' });
+    } catch (err) {
+        console.error('[LLM CONFIG SAVE ERROR]:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 module.exports = router;

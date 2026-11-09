@@ -248,3 +248,4 @@ def get_school_overview_stats(user_context: Dict[str, Any]) -> Dict[str, Any]:
         "total_classes": total_classes,
         "total_sections": total_sections
     }
+

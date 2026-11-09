@@ -6,6 +6,7 @@ from ..security.rbac_guard import evaluate_rbac, detect_prompt_injection, detect
 from ..security.audit_logger import log_audit_event
 from ..rag.retriever import retrieve_permitted_chunks
 from ..tools.registry import detect_db_tool_intent, execute_vetted_db_tool
+from ..llm_connector import generate_chat_completion
 
 def context_node(state: AgentState) -> Dict[str, Any]:
     """
@@ -110,6 +111,7 @@ def synthesis_node(state: AgentState) -> Dict[str, Any]:
     chunks = state.get("retrieved_chunks", [])
     role_name = user_context.get("role_name", "User")
     full_name = user_context.get("full_name") or user_context.get("username", "there")
+    msg = state.get("user_message", "")
 
     # 1. Synthesize DB Tool Responses
     if tool_intent and tool_res and tool_res.get("status") == "success":
@@ -193,6 +195,22 @@ def synthesis_node(state: AgentState) -> Dict[str, Any]:
         for c in chunks
     ])
 
+    # Check if dynamic LLM is configured and enabled in system_settings
+    system_prompt = (
+        f"You are the official Role-Aware AI Support Assistant for the School Management System.\n"
+        f"You are currently assisting user '{full_name}' whose verified active role is '{role_name}' (Level {user_context.get('role_level', 0)}).\n"
+        f"STRICT RULES:\n"
+        f"1. Only provide instructions, workflows, and assistance permitted by the user's role and the following permitted context.\n"
+        f"2. NEVER leak passwords, password hashes, secrets, or financial data outside their role.\n"
+        f"3. Be professional, concise, polite, and structure your answer with clear bullet points.\n\n"
+        f"PERMITTED KNOWLEDGE CONTEXT:\n{context_text}"
+    )
+
+    llm_reply = generate_chat_completion(system_prompt, msg, state.get("conversation_history"))
+    if llm_reply and llm_reply.strip():
+        return {"final_response": llm_reply.strip()}
+
+    # Structured deterministic fallback if LLM is disabled or key not configured
     greeting = f"Hello {full_name} ({role_name}),\n\n"
     response_text = greeting + f"Here is the guidance for your query:\n\n{context_text}\n\n"
     response_text += "If you need step-by-step assistance with another feature, let me know!"
