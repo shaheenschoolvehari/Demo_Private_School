@@ -263,7 +263,7 @@ router.post('/chat', async (req, res) => {
         if (!hasAgentAccess) {
             await logAuditDenial(userId, userCtx.role_name, userCtx.role_level, 'support.agent', cleanMsg, `Role '${userCtx.role_name}' lacks support.agent permission`);
             return res.status(403).json({
-                response: `🔒 Access Restricted: Isaac AI Assistant has not been enabled for your role (${userCtx.role_name}). Please contact your School Administrator to grant you Isaac AI access in Roles & Permissions.`,
+                response: `🔒 Access Restricted: Isaac AI has not been enabled for your role (${userCtx.role_name}). Please contact your School Administrator to grant you Isaac AI access in Roles & Permissions.`,
                 access_granted: false,
                 requested_module: 'support.agent',
                 role_name: userCtx.role_name,
@@ -539,7 +539,7 @@ router.post('/chat/stream', async (req, res) => {
         if (!hasAgentAccess) {
             await logAuditDenial(userId, userCtx.role_name, userCtx.role_level, 'support.agent', cleanMsg, `Role '${userCtx.role_name}' lacks support.agent permission`);
             sendEvent({
-                chunk: `🔒 Access Restricted: Isaac AI Assistant has not been enabled for your role (${userCtx.role_name}). Please contact your School Administrator to grant you Isaac AI access in Roles & Permissions.`,
+                chunk: `🔒 Access Restricted: Isaac AI has not been enabled for your role (${userCtx.role_name}). Please contact your School Administrator to grant you Isaac AI access in Roles & Permissions.`,
                 access_granted: false,
                 isRefusal: true,
                 done: true

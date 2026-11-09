@@ -176,7 +176,7 @@ export default function SupportAgentWidget({ user: propUser }: { user?: AuthUser
                     });
                 }
             }
-        } catch {}
+        } catch { }
     }, []);
 
     // ── Initial Welcome Message ──
@@ -305,7 +305,7 @@ export default function SupportAgentWidget({ user: propUser }: { user?: AuthUser
                     const parsed = JSON.parse(s);
                     return parsed.token || '';
                 }
-            } catch {}
+            } catch { }
         }
         return '';
     };
@@ -396,7 +396,7 @@ export default function SupportAgentWidget({ user: propUser }: { user?: AuthUser
                                         pageLinks: detectedLinks.length > 0 ? detectedLinks : m.pageLinks
                                     } : m));
                                 }
-                            } catch (e) {}
+                            } catch (e) { }
                         }
                     }
                 }
@@ -531,7 +531,7 @@ export default function SupportAgentWidget({ user: propUser }: { user?: AuthUser
                 } else if (btnPos.x !== undefined && btnPos.y !== undefined) {
                     try {
                         localStorage.setItem('sms_isaac_btn_pos', JSON.stringify(btnPos));
-                    } catch {}
+                    } catch { }
                 }
             }
             dragInfoRef.current = null;
@@ -579,7 +579,7 @@ export default function SupportAgentWidget({ user: propUser }: { user?: AuthUser
             window.removeEventListener('mouseup', handleMouseUp);
             try {
                 localStorage.setItem('sms_isaac_box_size', JSON.stringify(boxDimensions));
-            } catch {}
+            } catch { }
         };
 
         window.addEventListener('mousemove', handleMouseMove);
@@ -608,7 +608,7 @@ export default function SupportAgentWidget({ user: propUser }: { user?: AuthUser
                         onMouseDown={handleDragStart}
                         onTouchStart={handleDragStart}
                         title="Isaac AI (Drag to move, click to chat)"
-                        aria-label="Open Isaac AI Assistant"
+                        aria-label="Open Isaac AI"
                     >
                         {/* Shimmer Glim Ring */}
                         <div className="isaac-glim-halo"></div>
@@ -1615,7 +1615,7 @@ function generateMockResponse(query: string, role: string, roleLevel: number, cu
     return {
         id: 'agent-' + Date.now(),
         sender: 'agent',
-        text: `I understand your question regarding **"${query}"**.\n\nAs your **Isaac AI Assistant** for **${role}**, I can guide you through system workflows, page navigation, attendance protocols, and examination procedures.\n\nFeel free to click any of the **Quick Suggestions** below or ask a specific workflow question!`,
+        text: `I understand your question regarding **"${query}"**.\n\nAs your **Isaac AI** for **${role}**, I can guide you through system workflows, page navigation, attendance protocols, and examination procedures.\n\nFeel free to click any of the **Quick Suggestions** below or ask a specific workflow question!`,
         timestamp
     };
 }

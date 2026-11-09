@@ -169,7 +169,7 @@ const PAGE_TREE: Record<string, ModuleDef> = {
     ai_support: {
         label: 'Isaac AI Support', icon: 'bi-robot', color: '#e53935',
         pages: [
-            { key: 'support.agent', label: 'Isaac AI Assistant', icon: 'bi-robot', desc: 'Access to Isaac AI support agent chatbot & live assistance' },
+            { key: 'support.agent', label: 'Isaac AI', icon: 'bi-robot', desc: 'Access to Isaac AI support agent chatbot & live assistance' },
         ],
     },
 };

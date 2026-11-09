@@ -134,3 +134,4 @@ export default function IsaacBotVector({ size = 52, showGlim = true, className =
         </svg>
     );
 }
+
