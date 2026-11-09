@@ -250,6 +250,27 @@ router.post('/chat', async (req, res) => {
             });
         }
 
+        // Check Isaac AI Agent Access Permission (Higher roles >= 80 default, < 80 requires support.agent permission)
+        const isHigherRole = (userCtx.role_level || 0) >= 80;
+        const hasAgentAccess = isHigherRole || (
+            userCtx.effective_permissions && (
+                userCtx.effective_permissions['support.agent']?.can_read ||
+                userCtx.effective_permissions['ai.support']?.can_read ||
+                userCtx.effective_permissions['support_agent']?.can_read
+            )
+        );
+
+        if (!hasAgentAccess) {
+            await logAuditDenial(userId, userCtx.role_name, userCtx.role_level, 'support.agent', cleanMsg, `Role '${userCtx.role_name}' lacks support.agent permission`);
+            return res.status(403).json({
+                response: `🔒 Access Restricted: Isaac AI Assistant has not been enabled for your role (${userCtx.role_name}). Please contact your School Administrator to grant you Isaac AI access in Roles & Permissions.`,
+                access_granted: false,
+                requested_module: 'support.agent',
+                role_name: userCtx.role_name,
+                user_id: userId
+            });
+        }
+
         // Check Prompt Injection
         if (detectInjection(cleanMsg)) {
             await logAuditDenial(userId, userCtx.role_name, userCtx.role_level, 'security_violation', cleanMsg, 'Prompt injection pattern detected');
@@ -498,6 +519,27 @@ router.post('/chat/stream', async (req, res) => {
         if (!userCtx || !userCtx.is_active) {
             sendEvent({
                 chunk: '🔒 Your user account is inactive or disabled. Please contact the administrator.',
+                access_granted: false,
+                isRefusal: true,
+                done: true
+            });
+            return res.end();
+        }
+
+        // Check Isaac AI Agent Access Permission (Higher roles >= 80 default, < 80 requires support.agent permission)
+        const isHigherRole = (userCtx.role_level || 0) >= 80;
+        const hasAgentAccess = isHigherRole || (
+            userCtx.effective_permissions && (
+                userCtx.effective_permissions['support.agent']?.can_read ||
+                userCtx.effective_permissions['ai.support']?.can_read ||
+                userCtx.effective_permissions['support_agent']?.can_read
+            )
+        );
+
+        if (!hasAgentAccess) {
+            await logAuditDenial(userId, userCtx.role_name, userCtx.role_level, 'support.agent', cleanMsg, `Role '${userCtx.role_name}' lacks support.agent permission`);
+            sendEvent({
+                chunk: `🔒 Access Restricted: Isaac AI Assistant has not been enabled for your role (${userCtx.role_name}). Please contact your School Administrator to grant you Isaac AI access in Roles & Permissions.`,
                 access_granted: false,
                 isRefusal: true,
                 done: true

@@ -88,6 +88,7 @@ const PAGE_TREE: Record<string, ModuleDef> = {
     academic: {
         label: 'Academic', icon: 'bi-book-half', color: '#10b981',
         pages: [
+            { key: 'academic.priority', label: 'Priority Setting', icon: 'bi-sort-numeric-down', desc: 'Drag-and-drop ordering for classes and sections' },
             { key: 'academic.classes', label: 'Classes', icon: 'bi-building', desc: 'Manage class list' },
             { key: 'academic.sections', label: 'Sections', icon: 'bi-diagram-2', desc: 'Manage class sections' },
             { key: 'academic.subjects', label: 'Subjects', icon: 'bi-journal-text', desc: 'Manage subject records' },
@@ -165,6 +166,12 @@ const PAGE_TREE: Record<string, ModuleDef> = {
             { key: 'settings.roles', label: 'Roles', icon: 'bi-shield-fill-check', desc: 'Manage roles and page permissions' },
         ],
     },
+    ai_support: {
+        label: 'Isaac AI Support', icon: 'bi-robot', color: '#e53935',
+        pages: [
+            { key: 'support.agent', label: 'Isaac AI Assistant', icon: 'bi-robot', desc: 'Access to Isaac AI support agent chatbot & live assistance' },
+        ],
+    },
 };
 
 /* Flat list of all page keys for initializing form permissions */
@@ -205,34 +212,40 @@ export default function RolesPage() {
     };
 
     /* ── Build initial permissions array from a role's existing DB permissions ── */
-    const buildFormPerms = (existingPerms: Permission[]): Permission[] => {
+    const buildFormPerms = (existingPerms: Permission[], roleLevel: number = 50): Permission[] => {
         return ALL_PAGES.map(page => {
             // 1. Try exact page-level match
             const exact = existingPerms.find(p => p.module_name === page.key);
             if (exact) return exact;
 
-            // 2. Fallback: inherit from parent module key (legacy row like 'students')
+            // 2. Higher roles (>= 80) get support.agent enabled by default
+            if (page.key === 'support.agent' && roleLevel >= 80) {
+                return { module_name: page.key, can_read: true, can_write: true, can_delete: false };
+            }
+
+            // 3. Fallback: inherit from parent module key (legacy row like 'students')
             const parentKey = page.key.includes('.') ? page.key.split('.')[0] : null;
             if (parentKey) {
                 const parent = existingPerms.find(p => p.module_name === parentKey);
                 if (parent) return { module_name: page.key, can_read: parent.can_read, can_write: parent.can_write, can_delete: parent.can_delete };
             }
 
-            // 3. Default no access
+            // 4. Default no access
             return { module_name: page.key, can_read: false, can_write: false, can_delete: false };
         });
     };
 
     const handleEdit = (role: Role) => {
+        const lvl = role.role_level || 50;
         setFormData({
             ...role,
-            role_level: role.role_level || 50,
+            role_level: lvl,
             dashboard_access: role.dashboard_access || (
-                (role.role_level || 50) >= 90 ? 'admin' :
-                    (role.role_level || 50) >= 50 ? 'teacher' :
-                        (role.role_level || 50) >= 20 ? 'accountant' : 'student'
+                lvl >= 90 ? 'admin' :
+                    lvl >= 50 ? 'teacher' :
+                        lvl >= 20 ? 'accountant' : 'student'
             ),
-            permissions: buildFormPerms(role.permissions || [])
+            permissions: buildFormPerms(role.permissions || [], lvl)
         });
         setExpanded(Object.fromEntries(Object.keys(PAGE_TREE).map(k => [k, true])));
         setView('form');
@@ -251,9 +264,10 @@ export default function RolesPage() {
     };
 
     const handleCreate = () => {
+        const defaultLevel = 50;
         setFormData({
-            id: 0, role_name: '', description: '', role_level: 50, dashboard_access: 'admin', is_system_default: false, is_custom: true,
-            permissions: ALL_PAGES.map(p => ({ module_name: p.key, can_read: false, can_write: false, can_delete: false })),
+            id: 0, role_name: '', description: '', role_level: defaultLevel, dashboard_access: 'teacher', is_system_default: false, is_custom: true,
+            permissions: buildFormPerms([], defaultLevel),
         });
         setExpanded(Object.fromEntries(Object.keys(PAGE_TREE).map(k => [k, true])));
         setView('form');

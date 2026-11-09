@@ -1,8 +1,9 @@
 'use client';
 
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useAuth, AuthUser } from '@/contexts/AuthContext';
 import { usePathname, useRouter } from 'next/navigation';
+import IsaacBotVector from './IsaacBotVector';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 interface ChatMessage {
@@ -120,10 +121,25 @@ const API = process.env.NEXT_PUBLIC_API_URL || 'https://demo-private-school.onre
 
 // ─── Component ───────────────────────────────────────────────────────────────
 export default function SupportAgentWidget({ user: propUser }: { user?: AuthUser | null }) {
-    const { user: authUser, isLoggedIn } = useAuth();
+    const { user: authUser } = useAuth();
     const user = propUser || authUser;
     const pathname = usePathname();
     const router = useRouter();
+
+    const userRole = (user?.role_name || 'Staff').trim();
+    const roleLevel = user?.role_level || 50;
+
+    // ── RBAC Visibility Gate ──
+    // Higher roles (role_level >= 80) have default access.
+    // Roles with level < 80 ONLY see the widget if explicit 'support.agent' permission is assigned.
+    const hasAgentAccess = useMemo(() => {
+        if (!user) return false;
+        if ((user.role_level || 0) >= 80) return true;
+        const perms = user.permissions || [];
+        return perms.some(p =>
+            (p.module_name === 'support.agent' || p.module_name === 'ai.support' || p.module_name === 'support_agent') && p.can_read
+        );
+    }, [user]);
 
     const [isOpen, setIsOpen] = useState(false);
     const [isMinimized, setIsMinimized] = useState(false);
@@ -132,15 +148,40 @@ export default function SupportAgentWidget({ user: propUser }: { user?: AuthUser
     const [isTyping, setIsTyping] = useState(false);
     const [hasUnread, setHasUnread] = useState(false);
 
+    // Draggable position state for floating button
+    const [btnPos, setBtnPos] = useState<{ x?: number; y?: number }>({});
+    const dragInfoRef = useRef<{ startX: number; startY: number; origX: number; origY: number; moved: boolean } | null>(null);
+
+    // Dynamic resizable dimensions for the chat card
+    const [boxDimensions, setBoxDimensions] = useState<{ width: number; height: number }>({ width: 430, height: 610 });
+    const resizeInfoRef = useRef<{ startX: number; startY: number; startW: number; startH: number } | null>(null);
+
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLInputElement>(null);
 
-    const userRole = (user?.role_name || 'Staff').trim();
-    const roleLevel = user?.role_level || 50;
-
-    // ─── Initial Welcome Message ───────────────────────────────────────────────
+    // Load saved button position & box dimensions from localStorage
     useEffect(() => {
-        if (!user || messages.length > 0) return;
+        if (typeof window === 'undefined') return;
+        try {
+            const savedPos = localStorage.getItem('sms_isaac_btn_pos');
+            if (savedPos) setBtnPos(JSON.parse(savedPos));
+
+            const savedSize = localStorage.getItem('sms_isaac_box_size');
+            if (savedSize) {
+                const parsed = JSON.parse(savedSize);
+                if (parsed.width && parsed.height) {
+                    setBoxDimensions({
+                        width: Math.max(340, Math.min(window.innerWidth - 30, parsed.width)),
+                        height: Math.max(460, Math.min(window.innerHeight - 30, parsed.height))
+                    });
+                }
+            }
+        } catch {}
+    }, []);
+
+    // ── Initial Welcome Message ──
+    useEffect(() => {
+        if (!user || messages.length > 0 || !hasAgentAccess) return;
 
         const roleGreeting = getRoleGreeting(userRole, user.full_name || user.username || 'User');
         setMessages([
@@ -152,28 +193,27 @@ export default function SupportAgentWidget({ user: propUser }: { user?: AuthUser
                 roleTag: userRole
             }
         ]);
-    }, [user, userRole, messages.length]);
+    }, [user, userRole, messages.length, hasAgentAccess]);
 
-    // ─── Scroll to bottom ──────────────────────────────────────────────────────
-    const scrollToBottom = () => {
+    // ── Scroll to bottom ──
+    const scrollToBottom = useCallback(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    };
+    }, []);
 
     useEffect(() => {
         if (isOpen && !isMinimized) {
             scrollToBottom();
             setHasUnread(false);
         }
-    }, [isOpen, isMinimized, messages]);
+    }, [isOpen, isMinimized, messages, scrollToBottom]);
 
-    // Focus input when opened
     useEffect(() => {
         if (isOpen && !isMinimized) {
             setTimeout(() => inputRef.current?.focus(), 200);
         }
     }, [isOpen, isMinimized]);
 
-    // ─── Context-Aware Prompt Suggestions ──────────────────────────────────────
+    // ── Context-Aware & Rich Role-Tailored Prompt Suggestions ──
     const quickPrompts = useMemo(() => {
         const basePrompts: { label: string; query: string }[] = [];
 
@@ -186,54 +226,76 @@ export default function SupportAgentWidget({ user: propUser }: { user?: AuthUser
             });
         }
 
-        // 2. Role-specific common questions
-        if (roleLevel >= 90) {
-            // Admin
+        // 2. High-volume role-tailored prompt banks
+        if (roleLevel >= 80) {
+            // Administrator / Principal / Vice Principal
             basePrompts.push(
-                { label: '📊 System overview', query: 'What modules and management features can I access as Administrator?' },
                 { label: '⚡ How to set class priority?', query: 'How does the Priority Setting page work for classes and sections?' },
-                { label: '📢 Notification rules', query: 'Which notifications do I receive and how do approval alerts work?' }
+                { label: '📊 System overview', query: 'What modules and management features can I access as Administrator?' },
+                { label: '👥 Role permissions setup', query: 'How do I configure roles and dynamic permissions in Settings > Roles?' },
+                { label: '🎯 Exam marks approval', query: 'How do marks sheet approvals and publishing to parent portal work?' },
+                { label: '💵 Monthly fee slip rules', query: 'How do batch fee slip generation and arrear calculations work?' },
+                { label: '🔔 Notification alert rules', query: 'Which notifications do I receive and how do approval alerts work?' },
+                { label: '📅 Academic session setup', query: 'How do I configure academic years, terms, and promotion cycles?' },
+                { label: '📋 Staff attendance review', query: 'How do I track staff attendance and biometric logs?' },
+                { label: '📈 School directory stats', query: 'How many active students and teaching staff are currently in the school?' }
             );
         } else if (roleLevel >= 65) {
             // Coordinator / Head Teacher
             basePrompts.push(
-                { label: '📝 How to review attendance?', query: 'How do I view student attendance history for my coordinated classes?' },
-                { label: '🎯 Exam approval workflow', query: 'How do exam sheet submissions and publishing approvals work?' }
+                { label: '📝 Review student attendance', query: 'How do I view student attendance history for my coordinated classes?' },
+                { label: '🎯 Exam approval workflow', query: 'How do exam sheet submissions and publishing approvals work?' },
+                { label: '📋 My assigned classes', query: 'Which classes and sections am I assigned to coordinate or teach?' },
+                { label: '✍️ Test papers & marking', query: 'How do class test creation and test marking procedures work?' },
+                { label: '🔔 My notifications', query: 'What do my latest role notifications mean?' },
+                { label: '🔒 My role permissions', query: 'Which modules and pages can I access with my current role?' },
+                { label: '📆 Active academic session', query: 'What is the active academic year and current term schedule?' }
             );
         } else if (roleLevel === 50) {
-            // Teacher
+            // Teacher / Class Incharge
             basePrompts.push(
-                { label: '📅 How to mark attendance?', query: 'How do I mark daily student attendance for my assigned class?' },
-                { label: '📝 How to enter exam marks?', query: 'How do I enter and save term marks or class test marks?' },
-                { label: '🔒 What can I access?', query: 'Which pages and features can I access with my Teacher role?' }
+                { label: '📋 What classes do I teach?', query: 'Which classes and sections do I teach and am I a Class Incharge?' },
+                { label: '📅 Mark daily attendance', query: 'How do I mark daily student attendance for my assigned class?' },
+                { label: '✍️ Enter term exam marks', query: 'How do I enter and submit term exam marks for my subjects?' },
+                { label: '📝 Enter class test marks', query: 'How do I enter and record marks for weekly class tests?' },
+                { label: '📜 View marks sheet', query: 'How can a Class Incharge view class marks sheets and result cards?' },
+                { label: '🔔 Check my notifications', query: 'What are my latest notifications from the school administration?' },
+                { label: '🔒 Permitted pages', query: 'Which pages and features can I access with my Teacher role?' },
+                { label: '📆 Active academic term', query: 'What is the active academic year and term duration?' }
             );
-        } else if (roleLevel === 30) {
-            // Accountant
+        } else if (roleLevel >= 20 && roleLevel <= 35) {
+            // Accountant / Cashier
             basePrompts.push(
-                { label: '💵 How to collect fees?', query: 'How do I collect student tuition fees and print receipts?' },
-                { label: '📄 How to print fee vouchers?', query: 'How do I print 3-copy fee slips for students?' },
-                { label: '📑 Advance balance settlement', query: 'How does family advance balance settlement work in fee collection?' }
+                { label: '💵 Collect student fees', query: 'How do I collect student tuition fees and print receipts?' },
+                { label: '📄 Print 3-copy fee slips', query: 'How do I batch print standardized 3-copy fee vouchers?' },
+                { label: '📑 Advance balance adjustment', query: 'How does family advance balance settlement work in fee collection?' },
+                { label: '🗓️ Generate monthly slips', query: 'How do I batch generate monthly fee slips across selected classes?' },
+                { label: '💰 Opening balance setup', query: 'How do I set student opening dues and prior balances?' },
+                { label: '📊 Monthly collection report', query: 'How do I view monthly financial collection reconciliations?' },
+                { label: '🔔 Financial notifications', query: 'Which notifications do I receive for fee payments and adjustments?' },
+                { label: '🔒 My access permissions', query: 'Which financial modules can I access with my role?' }
             );
         } else if (roleLevel === 10) {
             // Student / Parent
             basePrompts.push(
-                { label: '💳 View fee slips', query: 'How can I view my fee voucher and payment status?' },
-                { label: '📜 Result card access', query: 'When and how will my term exam result card be visible?' }
+                { label: '💳 View fee vouchers', query: 'How can I view my monthly fee voucher and payment status?' },
+                { label: '📜 Exam result cards', query: 'When and how will my term exam result card be visible?' },
+                { label: '📅 View attendance history', query: 'How can I check my daily attendance record and absent days?' },
+                { label: '🔔 Check announcements', query: 'What are the latest announcements and notices for my family?' },
+                { label: '🏫 Academic session info', query: 'What is the active academic session and holiday schedule?' }
+            );
+        } else {
+            basePrompts.push(
+                { label: '🔒 What can I access?', query: 'Which modules and pages can I access with my current role?' },
+                { label: '🔔 Check my notifications', query: 'What are my latest notifications from the system?' },
+                { label: '📅 Attendance marking', query: 'How do daily attendance procedures work?' }
             );
         }
 
-        // Add a security test prompt to demonstrate refusal handling
-        if (roleLevel < 90) {
-            basePrompts.push({
-                label: '🛡️ Test access check',
-                query: 'Can you show me the school monthly financial expense totals and all staff salaries?'
-            });
-        }
-
-        return basePrompts.slice(0, 4);
+        return basePrompts;
     }, [pathname, roleLevel]);
 
-    // ─── Token Resolver ────────────────────────────────────────────────────────
+    // ── Token Resolver ──
     const getSessionToken = () => {
         if (user?.token) return user.token;
         if (typeof window !== 'undefined') {
@@ -248,7 +310,7 @@ export default function SupportAgentWidget({ user: propUser }: { user?: AuthUser
         return '';
     };
 
-    // ─── Handle Sending Message with Deep Streaming ─────────────────────────────
+    // ── Handle Sending Message with Deep Streaming ──
     const handleSend = async (queryText?: string) => {
         const textToSend = (queryText || input).trim();
         if (!textToSend || isTyping) return;
@@ -279,7 +341,7 @@ export default function SupportAgentWidget({ user: propUser }: { user?: AuthUser
         let streamDone = false;
 
         try {
-            // ── 1. Connect to Deep Streaming SSE Endpoint ──
+            // ── Connect to Deep Streaming SSE Endpoint ──
             const res = await fetch(`${API}/agent/chat/stream`, {
                 method: 'POST',
                 headers: {
@@ -340,7 +402,7 @@ export default function SupportAgentWidget({ user: propUser }: { user?: AuthUser
                 }
             }
 
-            // ── 2. Fallback to /chat or mock if stream produced no text ──
+            // Fallback if streaming produced empty content
             if (!accumulatedText.trim()) {
                 const fallbackRes = await fetch(`${API}/agent/chat`, {
                     method: 'POST',
@@ -412,7 +474,7 @@ export default function SupportAgentWidget({ user: propUser }: { user?: AuthUser
     };
 
     const clearChat = () => {
-        if (!confirm('Clear chat history?')) return;
+        if (!confirm('Clear chat history with Isaac AI?')) return;
         setMessages([]);
         const roleGreeting = getRoleGreeting(userRole, user?.full_name || user?.username || 'User');
         setMessages([
@@ -426,47 +488,212 @@ export default function SupportAgentWidget({ user: propUser }: { user?: AuthUser
         ]);
     };
 
-    // If not logged in, do not render agent widget
-    if (!isLoggedIn || !user) return null;
+    // ── Draggable Floating Button Mouse/Touch Handlers ──
+    const handleDragStart = (e: React.MouseEvent | React.TouchEvent) => {
+        const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+        const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
+
+        const currentX = btnPos.x !== undefined ? btnPos.x : (window.innerWidth - 80);
+        const currentY = btnPos.y !== undefined ? btnPos.y : (window.innerHeight - 80);
+
+        dragInfoRef.current = {
+            startX: clientX,
+            startY: clientY,
+            origX: currentX,
+            origY: currentY,
+            moved: false
+        };
+
+        const handleMove = (moveEvt: MouseEvent | TouchEvent) => {
+            if (!dragInfoRef.current) return;
+            const cx = 'touches' in moveEvt ? moveEvt.touches[0].clientX : moveEvt.clientX;
+            const cy = 'touches' in moveEvt ? moveEvt.touches[0].clientY : moveEvt.clientY;
+
+            const dx = cx - dragInfoRef.current.startX;
+            const dy = cy - dragInfoRef.current.startY;
+
+            if (Math.hypot(dx, dy) > 5) {
+                dragInfoRef.current.moved = true;
+            }
+
+            const clampedX = Math.max(12, Math.min(window.innerWidth - 76, dragInfoRef.current.origX + dx));
+            const clampedY = Math.max(12, Math.min(window.innerHeight - 76, dragInfoRef.current.origY + dy));
+
+            setBtnPos({ x: clampedX, y: clampedY });
+        };
+
+        const handleEnd = () => {
+            if (dragInfoRef.current) {
+                if (!dragInfoRef.current.moved) {
+                    // It was a tap/click -> toggle chat
+                    setIsOpen(prev => !prev);
+                    setIsMinimized(false);
+                } else if (btnPos.x !== undefined && btnPos.y !== undefined) {
+                    try {
+                        localStorage.setItem('sms_isaac_btn_pos', JSON.stringify(btnPos));
+                    } catch {}
+                }
+            }
+            dragInfoRef.current = null;
+            window.removeEventListener('mousemove', handleMove);
+            window.removeEventListener('mouseup', handleEnd);
+            window.removeEventListener('touchmove', handleMove);
+            window.removeEventListener('touchend', handleEnd);
+        };
+
+        window.addEventListener('mousemove', handleMove);
+        window.addEventListener('mouseup', handleEnd);
+        window.addEventListener('touchmove', handleMove, { passive: false });
+        window.addEventListener('touchend', handleEnd);
+    };
+
+    // ── Resizable Chat Box Top-Left Corner Handle ──
+    const handleResizeStart = (e: React.MouseEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+
+        resizeInfoRef.current = {
+            startX: e.clientX,
+            startY: e.clientY,
+            startW: boxDimensions.width,
+            startH: boxDimensions.height
+        };
+
+        const handleMouseMove = (moveEvt: MouseEvent) => {
+            if (!resizeInfoRef.current) return;
+            const deltaX = resizeInfoRef.current.startX - moveEvt.clientX;
+            const deltaY = resizeInfoRef.current.startY - moveEvt.clientY;
+
+            const maxW = Math.min(940, window.innerWidth - 32);
+            const maxH = Math.min(940, window.innerHeight - 32);
+
+            const newW = Math.max(340, Math.min(maxW, resizeInfoRef.current.startW + deltaX));
+            const newH = Math.max(460, Math.min(maxH, resizeInfoRef.current.startH + deltaY));
+
+            setBoxDimensions({ width: newW, height: newH });
+        };
+
+        const handleMouseUp = () => {
+            resizeInfoRef.current = null;
+            window.removeEventListener('mousemove', handleMouseMove);
+            window.removeEventListener('mouseup', handleMouseUp);
+            try {
+                localStorage.setItem('sms_isaac_box_size', JSON.stringify(boxDimensions));
+            } catch {}
+        };
+
+        window.addEventListener('mousemove', handleMouseMove);
+        window.addEventListener('mouseup', handleMouseUp);
+    };
+
+    // If role does not have access, hide completely
+    if (!hasAgentAccess) return null;
 
     return (
-        <aside aria-label="School AI Support Assistant" className="support-agent-wrapper">
-            {/* ── Floating Launcher Button ── */}
+        <aside aria-label="Isaac AI Support Assistant">
+            {/* ── 1. Moveable Floating Launcher Button (With Cute Isaac Vector & Specular Glims) ── */}
             {!isOpen && (
-                <button
-                    type="button"
-                    className="agent-launcher-btn shadow-lg"
-                    onClick={() => { setIsOpen(true); setIsMinimized(false); setHasUnread(false); }}
-                    title="Open AI School Support Assistant"
-                    aria-label="Open AI School Support Assistant"
+                <div
+                    className="isaac-launcher-container"
+                    style={btnPos.x !== undefined && btnPos.y !== undefined ? {
+                        left: `${btnPos.x}px`,
+                        top: `${btnPos.y}px`,
+                        bottom: 'auto',
+                        right: 'auto'
+                    } : undefined}
                 >
-                    <div className="agent-launcher-inner">
-                        <i className="bi bi-stars launcher-sparkle"></i>
-                        <i className="bi bi-chat-dots-fill launcher-chat-icon"></i>
-                        <span className="agent-launcher-text">AI Support</span>
-                    </div>
-                    {hasUnread && <span className="agent-unread-dot" />}
-                </button>
+                    <button
+                        type="button"
+                        className="isaac-floating-btn"
+                        onMouseDown={handleDragStart}
+                        onTouchStart={handleDragStart}
+                        title="Isaac AI (Drag to move, click to chat)"
+                        aria-label="Open Isaac AI Assistant"
+                    >
+                        {/* Shimmer Glim Ring */}
+                        <div className="isaac-glim-halo"></div>
+
+                        {/* Vector Graphic */}
+                        <IsaacBotVector size={54} showGlim={true} />
+
+                        {/* Unread Message Dot */}
+                        {hasUnread && <span className="isaac-unread-dot" />}
+                    </button>
+                    <div className="isaac-pill-label">Isaac AI</div>
+                </div>
             )}
 
-            {/* ── Chat Container ── */}
-            {isOpen && (
-                <div className={`agent-chat-card shadow-2xl ${isMinimized ? 'minimized' : ''}`}>
+            {/* ── 2. Super Compact Minimized Floating Pill ── */}
+            {isOpen && isMinimized && (
+                <div
+                    className="isaac-minimized-pill shadow-lg"
+                    style={btnPos.x !== undefined && btnPos.y !== undefined ? {
+                        left: `${Math.min(btnPos.x, window.innerWidth - 200)}px`,
+                        top: `${btnPos.y}px`,
+                        bottom: 'auto',
+                        right: 'auto'
+                    } : undefined}
+                    onClick={() => setIsMinimized(false)}
+                    title="Click to expand Isaac AI"
+                >
+                    <IsaacBotVector size={30} showGlim={true} />
+                    <div className="minimized-pill-info">
+                        <span className="minimized-pill-title">Isaac AI</span>
+                        <span className="minimized-pill-status">
+                            <span className="minimized-live-dot"></span> Online
+                        </span>
+                    </div>
+                    <div className="minimized-pill-actions">
+                        <button
+                            type="button"
+                            className="minimized-action-btn"
+                            onClick={(e) => { e.stopPropagation(); setIsMinimized(false); }}
+                            title="Expand Isaac AI"
+                        >
+                            <i className="bi bi-arrows-angle-expand"></i>
+                        </button>
+                        <button
+                            type="button"
+                            className="minimized-action-btn"
+                            onClick={(e) => { e.stopPropagation(); setIsOpen(false); }}
+                            title="Close"
+                        >
+                            <i className="bi bi-x-lg"></i>
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            {/* ── 3. Dynamic Resizable Chat Card Container ── */}
+            {isOpen && !isMinimized && (
+                <div
+                    className="agent-chat-card shadow-2xl"
+                    style={{
+                        width: `${boxDimensions.width}px`,
+                        height: `${boxDimensions.height}px`
+                    }}
+                >
+                    {/* Interactive Resize Handle (Top-Left Grip for desktop) */}
+                    <div
+                        className="agent-resize-handle"
+                        onMouseDown={handleResizeStart}
+                        title="Click and drag to resize Isaac AI chat window"
+                    >
+                        <i className="bi bi-arrows-angle-expand"></i>
+                    </div>
+
                     {/* Header */}
                     <div className="agent-header">
                         <div className="agent-header-left">
-                            <div className="agent-avatar">
-                                <i className="bi bi-robot"></i>
+                            <div className="agent-avatar-wrap">
+                                <IsaacBotVector size={36} showGlim={true} />
                                 <span className="agent-online-dot"></span>
                             </div>
                             <div className="agent-header-info">
-                                <div className="agent-title-row">
-                                    <h2 className="agent-title">School Support AI</h2>
-                                    <span className="agent-badge-role" title={`Logged in role: ${userRole} (Level ${roleLevel})`}>
-                                        {userRole}
-                                    </span>
-                                </div>
-                                <span className="agent-subtitle">Role-Aware Assistant • Online</span>
+                                <h2 className="agent-title">Isaac AI</h2>
+                                <span className="agent-status-badge">
+                                    <span className="agent-live-dot"></span> Active Assistant
+                                </span>
                             </div>
                         </div>
 
@@ -474,16 +701,16 @@ export default function SupportAgentWidget({ user: propUser }: { user?: AuthUser
                             <button
                                 type="button"
                                 className="agent-btn-icon"
-                                onClick={() => setIsMinimized(prev => !prev)}
-                                title={isMinimized ? 'Expand' : 'Minimize'}
+                                onClick={() => setIsMinimized(true)}
+                                title="Minimize to compact pill"
                             >
-                                <i className={`bi bi-${isMinimized ? 'arrows-angle-expand' : 'dash-lg'}`}></i>
+                                <i className="bi bi-dash-lg"></i>
                             </button>
                             <button
                                 type="button"
                                 className="agent-btn-icon"
                                 onClick={clearChat}
-                                title="Clear Conversation"
+                                title="Clear conversation"
                             >
                                 <i className="bi bi-trash3"></i>
                             </button>
@@ -498,297 +725,384 @@ export default function SupportAgentWidget({ user: propUser }: { user?: AuthUser
                         </div>
                     </div>
 
-                    {/* Body (Collapses when minimized) */}
-                    {!isMinimized && (
-                        <>
-                            {/* Message Stream */}
-                            <div className="agent-body">
-                                <div className="agent-intro-banner">
-                                    <i className="bi bi-shield-lock-fill me-1 text-teal"></i>
-                                    <span>
-                                        Responses are strictly personalized to your permissions as <strong>{userRole}</strong>.
-                                    </span>
-                                </div>
+                    {/* Body */}
+                    <div className="agent-body">
+                        {/* Dynamic Personalized Role Permission Banner */}
+                        <div className="agent-intro-banner">
+                            <i className="bi bi-shield-check me-1 text-teal"></i>
+                            <span>
+                                Responses are strictly personalized to your permissions as <strong>{userRole}</strong>.
+                            </span>
+                        </div>
 
-                                <div className="agent-messages-list">
-                                    {messages.map(msg => (
-                                        <div
-                                            key={msg.id}
-                                            className={`agent-message-row ${msg.sender === 'user' ? 'msg-user' : 'msg-agent'}`}
-                                        >
-                                            {msg.sender === 'agent' && (
-                                                <div className="msg-avatar-icon">
-                                                    <i className="bi bi-robot"></i>
-                                                </div>
-                                            )}
-                                            <div className={`agent-message-bubble ${msg.isRefusal ? 'msg-refusal' : ''}`}>
-                                                {msg.isStreaming && !msg.text ? (
-                                                    <div className="d-flex align-items-center py-1">
-                                                        <span className="typing-dot me-1"></span>
-                                                        <span className="typing-dot me-1"></span>
-                                                        <span className="typing-dot"></span>
-                                                    </div>
-                                                ) : (
-                                                    <div className="msg-text-content">{renderFormattedText(msg.text, msg.isStreaming)}</div>
-                                                )}
-
-                                                {msg.pageLinks && msg.pageLinks.length > 0 && (
-                                                    <div className="msg-links-container">
-                                                        {msg.pageLinks.map((link, idx) => (
-                                                            <button
-                                                                key={idx}
-                                                                type="button"
-                                                                className="msg-link-pill"
-                                                                onClick={() => {
-                                                                    router.push(link.href);
-                                                                    if (window.innerWidth < 640) setIsOpen(false);
-                                                                }}
-                                                            >
-                                                                <i className="bi bi-arrow-right-circle me-1"></i>
-                                                                {link.label}
-                                                            </button>
-                                                        ))}
-                                                    </div>
-                                                )}
-
-                                                <span className="msg-timestamp">{msg.timestamp}</span>
-                                            </div>
-                                        </div>
-                                    ))}
-
-                                    {isTyping && !messages.some(m => m.isStreaming) && (
-                                        <div className="agent-message-row msg-agent">
-                                            <div className="msg-avatar-icon">
-                                                <i className="bi bi-robot"></i>
-                                            </div>
-                                            <div className="agent-message-bubble msg-typing">
-                                                <span className="typing-dot"></span>
-                                                <span className="typing-dot"></span>
-                                                <span className="typing-dot"></span>
-                                            </div>
+                        {/* Messages Stream */}
+                        <div className="agent-messages-list">
+                            {messages.map(msg => (
+                                <div
+                                    key={msg.id}
+                                    className={`agent-message-row ${msg.sender === 'user' ? 'msg-user' : 'msg-agent'}`}
+                                >
+                                    {msg.sender === 'agent' && (
+                                        <div className="msg-avatar-icon">
+                                            <IsaacBotVector size={26} showGlim={false} />
                                         </div>
                                     )}
-                                    <div ref={messagesEndRef} />
-                                </div>
+                                    <div className={`agent-message-bubble ${msg.isRefusal ? 'msg-refusal' : ''}`}>
+                                        {msg.isStreaming && !msg.text ? (
+                                            <div className="d-flex align-items-center py-1">
+                                                <span className="typing-dot me-1"></span>
+                                                <span className="typing-dot me-1"></span>
+                                                <span className="typing-dot"></span>
+                                            </div>
+                                        ) : (
+                                            <div className="msg-text-content">{renderFormattedText(msg.text, msg.isStreaming)}</div>
+                                        )}
 
-                                {/* Suggested Prompts */}
-                                {quickPrompts.length > 0 && (
-                                    <div className="agent-prompts-bar">
-                                        <span className="prompts-label">Quick Suggestions:</span>
-                                        <div className="prompts-scroll-box">
-                                            {quickPrompts.map((p, idx) => (
-                                                <button
-                                                    key={idx}
-                                                    type="button"
-                                                    className="prompt-chip-btn"
-                                                    onClick={() => handleSend(p.query)}
-                                                >
-                                                    {p.label}
-                                                </button>
-                                            ))}
-                                        </div>
+                                        {msg.pageLinks && msg.pageLinks.length > 0 && (
+                                            <div className="msg-links-container">
+                                                {msg.pageLinks.map((link, idx) => (
+                                                    <button
+                                                        key={idx}
+                                                        type="button"
+                                                        className="msg-link-pill"
+                                                        onClick={() => {
+                                                            router.push(link.href);
+                                                            if (window.innerWidth < 640) setIsOpen(false);
+                                                        }}
+                                                    >
+                                                        <i className="bi bi-arrow-right-circle me-1"></i>
+                                                        {link.label}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        )}
+
+                                        <span className="msg-timestamp">{msg.timestamp}</span>
                                     </div>
-                                )}
-                            </div>
+                                </div>
+                            ))}
 
-                            {/* Input Form */}
-                            <div className="agent-footer">
-                                <div className="agent-input-wrap">
-                                    <input
-                                        ref={inputRef}
-                                        type="text"
-                                        className="agent-text-input"
-                                        placeholder={`Ask anything as ${userRole}…`}
-                                        value={input}
-                                        onChange={e => setInput(e.target.value)}
-                                        onKeyDown={handleKeyDown}
-                                        disabled={isTyping}
-                                    />
-                                    <button
-                                        type="button"
-                                        className="agent-send-btn"
-                                        onClick={() => handleSend()}
-                                        disabled={!input.trim() || isTyping}
-                                        title="Send question"
-                                    >
-                                        <i className="bi bi-send-fill"></i>
-                                    </button>
+                            {isTyping && !messages.some(m => m.isStreaming) && (
+                                <div className="agent-message-row msg-agent">
+                                    <div className="msg-avatar-icon">
+                                        <IsaacBotVector size={26} showGlim={false} />
+                                    </div>
+                                    <div className="agent-message-bubble msg-typing">
+                                        <span className="typing-dot"></span>
+                                        <span className="typing-dot"></span>
+                                        <span className="typing-dot"></span>
+                                    </div>
                                 </div>
-                                <div className="agent-footer-note">
-                                    Role-Aware Support Engine • LangChain &amp; LangGraph
+                            )}
+                            <div ref={messagesEndRef} />
+                        </div>
+
+                        {/* Rich Role-Tailored Quick Suggestions */}
+                        {quickPrompts.length > 0 && (
+                            <div className="agent-prompts-bar">
+                                <span className="prompts-label">Quick Suggestions for {userRole}:</span>
+                                <div className="prompts-scroll-box">
+                                    {quickPrompts.map((p, idx) => (
+                                        <button
+                                            key={idx}
+                                            type="button"
+                                            className="prompt-chip-btn"
+                                            onClick={() => handleSend(p.query)}
+                                        >
+                                            {p.label}
+                                        </button>
+                                    ))}
                                 </div>
                             </div>
-                        </>
-                    )}
+                        )}
+                    </div>
+
+                    {/* Footer Input Area (Clean, no extra footer note) */}
+                    <div className="agent-footer">
+                        <div className="agent-input-wrap">
+                            <input
+                                ref={inputRef}
+                                type="text"
+                                className="agent-text-input"
+                                placeholder={`Ask anything as ${userRole}…`}
+                                value={input}
+                                onChange={e => setInput(e.target.value)}
+                                onKeyDown={handleKeyDown}
+                                disabled={isTyping}
+                            />
+                            <button
+                                type="button"
+                                className="agent-send-btn"
+                                onClick={() => handleSend()}
+                                disabled={!input.trim() || isTyping}
+                                title="Send question to Isaac AI"
+                            >
+                                <i className="bi bi-send-fill"></i>
+                            </button>
+                        </div>
+                    </div>
                 </div>
             )}
 
-            {/* ── Embedded Scoped CSS ── */}
+            {/* ── Scoped Styling ── */}
             <style>{`
-                /* ─ Launcher Button ─ */
-                .support-agent-wrapper {
+                /* ─ Moveable Floating Launcher ─ */
+                .isaac-launcher-container {
                     position: fixed;
                     bottom: 1.5rem;
                     right: 1.5rem;
                     z-index: 99999;
-                    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                }
-                .agent-launcher-btn {
-                    display: inline-flex;
+                    display: flex;
+                    flex-direction: column;
                     align-items: center;
-                    justify-content: center;
-                    background: linear-gradient(135deg, #215E61 0%, #233D4D 100%);
-                    color: #fff;
-                    border: 2px solid rgba(255, 255, 255, 0.25);
-                    border-radius: 50px;
-                    padding: 0.65rem 1.15rem;
-                    cursor: pointer;
-                    transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+                    cursor: grab;
+                    user-select: none;
+                    touch-action: none;
+                }
+                .isaac-launcher-container:active {
+                    cursor: grabbing;
+                }
+                .isaac-floating-btn {
+                    width: 64px;
+                    height: 64px;
+                    border-radius: 50%;
+                    background: transparent;
+                    border: none;
+                    outline: none;
                     position: relative;
-                }
-                .agent-launcher-btn:hover {
-                    transform: translateY(-2px) scale(1.03);
-                    box-shadow: 0 10px 25px rgba(33, 94, 97, 0.45);
-                    border-color: #FE7F2D;
-                }
-                .agent-launcher-inner {
                     display: flex;
                     align-items: center;
-                    gap: 0.5rem;
+                    justify-content: center;
+                    padding: 0;
+                    cursor: pointer;
+                    transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
                 }
-                .launcher-sparkle {
-                    color: #FE7F2D;
-                    font-size: 1.1rem;
-                    animation: pulseSparkle 2s infinite;
+                .isaac-floating-btn:hover {
+                    transform: scale(1.08) translateY(-3px);
                 }
-                .launcher-chat-icon {
-                    font-size: 1.1rem;
+                .isaac-glim-halo {
+                    position: absolute;
+                    inset: -3px;
+                    border-radius: 50%;
+                    background: radial-gradient(circle, rgba(255, 82, 82, 0.4) 0%, rgba(229, 57, 53, 0) 70%);
+                    animation: glimHaloPulse 2.8s infinite ease-in-out;
+                    z-index: -1;
                 }
-                .agent-launcher-text {
-                    font-weight: 700;
-                    font-size: 0.88rem;
-                    letter-spacing: 0.2px;
-                }
-                .agent-unread-dot {
+                .isaac-unread-dot {
                     position: absolute;
                     top: 2px;
                     right: 2px;
-                    width: 12px;
-                    height: 12px;
-                    background: #FE7F2D;
-                    border: 2px solid #fff;
+                    width: 13px;
+                    height: 13px;
+                    background: #00e5ff;
+                    border: 2px solid #ffffff;
                     border-radius: 50%;
+                    box-shadow: 0 0 8px #00e5ff;
+                }
+                .isaac-pill-label {
+                    margin-top: 4px;
+                    font-size: 0.68rem;
+                    font-weight: 700;
+                    color: #fff;
+                    background: rgba(35, 61, 77, 0.9);
+                    padding: 0.15rem 0.55rem;
+                    border-radius: 12px;
+                    box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+                    letter-spacing: 0.3px;
+                    pointer-events: none;
                 }
 
-                /* ─ Chat Card (Desktop) ─ */
-                .agent-chat-card {
-                    width: 390px;
-                    height: 590px;
-                    background: #ffffff;
-                    border-radius: 18px;
-                    border: 1px solid rgba(33, 94, 97, 0.15);
+                /* ─ Compact Minimized Floating Pill ─ */
+                .isaac-minimized-pill {
+                    position: fixed;
+                    bottom: 1.5rem;
+                    right: 1.5rem;
+                    z-index: 99999;
+                    display: inline-flex;
+                    align-items: center;
+                    gap: 0.55rem;
+                    background: linear-gradient(135deg, #233D4D 0%, #215E61 100%);
+                    color: #fff;
+                    padding: 0.45rem 0.75rem 0.45rem 0.55rem;
+                    border-radius: 28px;
+                    border: 1.5px solid rgba(255, 255, 255, 0.2);
+                    cursor: pointer;
+                    box-shadow: 0 8px 24px rgba(35, 61, 77, 0.35);
+                    transition: transform 0.2s, box-shadow 0.2s;
+                }
+                .isaac-minimized-pill:hover {
+                    transform: translateY(-2px);
+                    box-shadow: 0 12px 28px rgba(35, 61, 77, 0.45);
+                }
+                .minimized-pill-info {
                     display: flex;
                     flex-direction: column;
-                    overflow: hidden;
-                    box-shadow: 0 12px 40px rgba(35, 61, 77, 0.28);
-                    animation: popIn 0.22s cubic-bezier(0.16, 1, 0.3, 1);
                 }
-                .agent-chat-card.minimized {
-                    height: auto !important;
-                    box-shadow: 0 6px 20px rgba(35, 61, 77, 0.2);
+                .minimized-pill-title {
+                    font-size: 0.82rem;
+                    font-weight: 700;
+                    color: #fff;
+                    line-height: 1.1;
+                }
+                .minimized-pill-status {
+                    font-size: 0.64rem;
+                    color: #80f7ff;
+                    display: flex;
+                    align-items: center;
+                    gap: 4px;
+                }
+                .minimized-live-dot {
+                    width: 6px;
+                    height: 6px;
+                    border-radius: 50%;
+                    background: #00e5ff;
+                    box-shadow: 0 0 6px #00e5ff;
+                }
+                .minimized-pill-actions {
+                    display: flex;
+                    align-items: center;
+                    gap: 4px;
+                    margin-left: 0.3rem;
+                }
+                .minimized-action-btn {
+                    background: rgba(255, 255, 255, 0.15);
+                    border: none;
+                    color: #fff;
+                    width: 24px;
+                    height: 24px;
+                    border-radius: 50%;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    font-size: 0.72rem;
+                    cursor: pointer;
+                    transition: background 0.15s;
+                }
+                .minimized-action-btn:hover {
+                    background: rgba(255, 255, 255, 0.3);
+                }
+
+                /* ─ Resizable Chat Card ─ */
+                .agent-chat-card {
+                    position: fixed;
+                    bottom: 1.5rem;
+                    right: 1.5rem;
+                    z-index: 99999;
+                    background: #ffffff;
+                    border-radius: 20px;
+                    border: 1px solid rgba(33, 94, 97, 0.2);
+                    display: flex;
+                    flex-direction: column;
+                    box-shadow: 0 16px 45px rgba(35, 61, 77, 0.32);
+                    animation: popIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+                    min-width: 340px;
+                    min-height: 460px;
+                    max-width: 95vw;
+                    max-height: 94vh;
+                    overflow: hidden;
+                }
+
+                /* ─ Top-Left Corner Resize Grip ─ */
+                .agent-resize-handle {
+                    position: absolute;
+                    top: 2px;
+                    left: 2px;
+                    width: 22px;
+                    height: 22px;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    color: rgba(255, 255, 255, 0.5);
+                    font-size: 0.7rem;
+                    cursor: nwse-resize;
+                    z-index: 10;
+                    transform: rotate(90deg);
+                    transition: color 0.15s;
+                }
+                .agent-resize-handle:hover {
+                    color: #00e5ff;
                 }
 
                 /* ─ Header ─ */
                 .agent-header {
-                    background: linear-gradient(135deg, #233D4D 0%, #215E61 100%);
+                    background: linear-gradient(135deg, #1b323f 0%, #215E61 100%);
                     color: #fff;
-                    padding: 0.85rem 1rem;
+                    padding: 0.75rem 1rem 0.75rem 1.4rem;
                     display: flex;
                     align-items: center;
                     justify-content: space-between;
                     flex-shrink: 0;
+                    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
                 }
                 .agent-header-left {
                     display: flex;
                     align-items: center;
                     gap: 0.65rem;
                 }
-                .agent-avatar {
-                    width: 38px;
-                    height: 38px;
-                    background: rgba(255, 255, 255, 0.15);
-                    border: 1.5px solid rgba(254, 127, 45, 0.6);
-                    border-radius: 12px;
+                .agent-avatar-wrap {
+                    position: relative;
                     display: flex;
                     align-items: center;
                     justify-content: center;
-                    font-size: 1.25rem;
-                    color: #fff;
-                    position: relative;
                 }
                 .agent-online-dot {
                     position: absolute;
-                    bottom: -2px;
-                    right: -2px;
+                    bottom: 0;
+                    right: 0;
                     width: 9px;
                     height: 9px;
                     background: #10b981;
-                    border: 1.5px solid #233D4D;
+                    border: 2px solid #233D4D;
                     border-radius: 50%;
                 }
                 .agent-header-info {
                     display: flex;
                     flex-direction: column;
                 }
-                .agent-title-row {
+                .agent-title {
+                    font-size: 1.02rem;
+                    font-weight: 800;
+                    margin: 0;
+                    color: #ffffff;
+                    letter-spacing: 0.2px;
+                }
+                .agent-status-badge {
+                    font-size: 0.65rem;
+                    color: #80f7ff;
                     display: flex;
                     align-items: center;
-                    gap: 0.45rem;
+                    gap: 4px;
+                    font-weight: 500;
                 }
-                .agent-title {
-                    font-size: 0.95rem;
-                    font-weight: 700;
-                    margin: 0;
-                    color: #fff;
-                    line-height: 1.2;
-                }
-                .agent-badge-role {
-                    background: rgba(254, 127, 45, 0.22);
-                    border: 1px solid #FE7F2D;
-                    color: #fff;
-                    font-size: 0.65rem;
-                    font-weight: 700;
-                    padding: 0.1rem 0.45rem;
-                    border-radius: 10px;
-                    text-transform: uppercase;
-                    letter-spacing: 0.3px;
-                }
-                .agent-subtitle {
-                    font-size: 0.72rem;
-                    color: rgba(255, 255, 255, 0.75);
+                .agent-live-dot {
+                    width: 6px;
+                    height: 6px;
+                    background: #00e5ff;
+                    border-radius: 50%;
+                    box-shadow: 0 0 5px #00e5ff;
                 }
                 .agent-header-actions {
                     display: flex;
                     align-items: center;
-                    gap: 0.25rem;
+                    gap: 0.35rem;
                 }
                 .agent-btn-icon {
-                    background: transparent;
+                    background: rgba(255, 255, 255, 0.12);
                     border: none;
-                    color: rgba(255, 255, 255, 0.8);
+                    color: #ffffff;
                     width: 28px;
                     height: 28px;
-                    border-radius: 6px;
-                    display: inline-flex;
+                    border-radius: 8px;
+                    display: flex;
                     align-items: center;
                     justify-content: center;
+                    font-size: 0.8rem;
                     cursor: pointer;
-                    font-size: 0.88rem;
-                    transition: background 0.15s, color 0.15s;
+                    transition: all 0.15s;
                 }
                 .agent-btn-icon:hover {
-                    background: rgba(255, 255, 255, 0.18);
-                    color: #fff;
+                    background: rgba(255, 255, 255, 0.25);
+                    transform: scale(1.05);
                 }
 
                 /* ─ Body ─ */
@@ -796,17 +1110,19 @@ export default function SupportAgentWidget({ user: propUser }: { user?: AuthUser
                     flex: 1;
                     display: flex;
                     flex-direction: column;
+                    background: #f8fbfb;
                     overflow: hidden;
-                    background: #f8fafb;
+                    min-height: 0;
                 }
                 .agent-intro-banner {
-                    background: #eaf5f6;
-                    border-bottom: 1px solid #c7e5e7;
+                    background: #eef7f8;
+                    border-bottom: 1px solid #d4ebec;
                     padding: 0.45rem 0.85rem;
                     font-size: 0.72rem;
                     color: #215E61;
                     display: flex;
                     align-items: center;
+                    flex-shrink: 0;
                 }
                 .agent-messages-list {
                     flex: 1;
@@ -814,10 +1130,9 @@ export default function SupportAgentWidget({ user: propUser }: { user?: AuthUser
                     padding: 0.9rem 0.85rem;
                     display: flex;
                     flex-direction: column;
-                    gap: 0.75rem;
+                    gap: 0.85rem;
+                    min-height: 0;
                 }
-
-                /* ─ Message Bubbles ─ */
                 .agent-message-row {
                     display: flex;
                     align-items: flex-end;
@@ -832,13 +1147,9 @@ export default function SupportAgentWidget({ user: propUser }: { user?: AuthUser
                 .msg-avatar-icon {
                     width: 28px;
                     height: 28px;
-                    background: #215E61;
-                    color: #fff;
-                    border-radius: 8px;
                     display: flex;
                     align-items: center;
                     justify-content: center;
-                    font-size: 0.85rem;
                     flex-shrink: 0;
                     margin-bottom: 2px;
                 }
@@ -873,24 +1184,27 @@ export default function SupportAgentWidget({ user: propUser }: { user?: AuthUser
                     display: block;
                     font-size: 0.65rem;
                     margin-top: 0.3rem;
-                    opacity: 0.65;
                     text-align: right;
+                    opacity: 0.65;
                 }
                 .msg-links-container {
-                    margin-top: 0.5rem;
                     display: flex;
-                    flex-direction: column;
-                    gap: 0.3rem;
+                    flex-wrap: wrap;
+                    gap: 0.35rem;
+                    margin-top: 0.55rem;
+                    padding-top: 0.45rem;
+                    border-top: 1px solid #e2ecec;
                 }
                 .msg-link-pill {
-                    background: #eaf5f6;
-                    border: 1px solid #215E61;
+                    background: #edf7f8;
                     color: #215E61;
-                    padding: 0.25rem 0.6rem;
-                    border-radius: 6px;
-                    font-size: 0.74rem;
+                    border: 1px solid #cce8e9;
+                    font-size: 0.72rem;
                     font-weight: 600;
-                    text-align: left;
+                    border-radius: 14px;
+                    padding: 0.2rem 0.55rem;
+                    display: inline-flex;
+                    align-items: center;
                     cursor: pointer;
                     transition: all 0.15s;
                 }
@@ -948,20 +1262,26 @@ export default function SupportAgentWidget({ user: propUser }: { user?: AuthUser
                 }
                 .prompts-scroll-box {
                     display: flex;
-                    gap: 0.4rem;
+                    gap: 0.45rem;
                     overflow-x: auto;
-                    padding-bottom: 2px;
-                    scrollbar-width: none;
+                    padding-bottom: 3px;
+                    scrollbar-width: thin;
                 }
-                .prompts-scroll-box::-webkit-scrollbar { display: none; }
+                .prompts-scroll-box::-webkit-scrollbar {
+                    height: 4px;
+                }
+                .prompts-scroll-box::-webkit-scrollbar-thumb {
+                    background: #cce3e4;
+                    border-radius: 4px;
+                }
                 .prompt-chip-btn {
                     white-space: nowrap;
                     background: #f3f8f8;
                     border: 1px solid #c9e2e4;
                     color: #215E61;
                     font-size: 0.74rem;
-                    font-weight: 500;
-                    padding: 0.25rem 0.65rem;
+                    font-weight: 600;
+                    padding: 0.28rem 0.75rem;
                     border-radius: 20px;
                     cursor: pointer;
                     transition: all 0.15s;
@@ -971,13 +1291,14 @@ export default function SupportAgentWidget({ user: propUser }: { user?: AuthUser
                     background: #215E61;
                     border-color: #215E61;
                     color: #fff;
+                    transform: translateY(-1px);
                 }
 
                 /* ─ Footer Input ─ */
                 .agent-footer {
                     background: #fff;
                     border-top: 1px solid #e0eeef;
-                    padding: 0.65rem 0.85rem 0.5rem;
+                    padding: 0.65rem 0.85rem;
                     flex-shrink: 0;
                 }
                 .agent-input-wrap {
@@ -987,7 +1308,7 @@ export default function SupportAgentWidget({ user: propUser }: { user?: AuthUser
                     background: #f7fafb;
                     border: 1.5px solid #c7dfe1;
                     border-radius: 25px;
-                    padding: 0.2rem 0.35rem 0.2rem 0.85rem;
+                    padding: 0.25rem 0.4rem 0.25rem 0.95rem;
                     transition: border-color 0.2s, box-shadow 0.2s;
                 }
                 .agent-input-wrap:focus-within {
@@ -1008,8 +1329,8 @@ export default function SupportAgentWidget({ user: propUser }: { user?: AuthUser
                     color: #9ca3af;
                 }
                 .agent-send-btn {
-                    width: 32px;
-                    height: 32px;
+                    width: 34px;
+                    height: 34px;
                     background: #215E61;
                     color: #fff;
                     border: none;
@@ -1017,7 +1338,7 @@ export default function SupportAgentWidget({ user: propUser }: { user?: AuthUser
                     display: flex;
                     align-items: center;
                     justify-content: center;
-                    font-size: 0.82rem;
+                    font-size: 0.85rem;
                     cursor: pointer;
                     transition: background 0.15s, transform 0.1s;
                     flex-shrink: 0;
@@ -1030,48 +1351,42 @@ export default function SupportAgentWidget({ user: propUser }: { user?: AuthUser
                     background: #cbd5e1;
                     cursor: not-allowed;
                 }
-                .agent-footer-note {
-                    text-align: center;
-                    font-size: 0.63rem;
-                    color: #94a3b8;
-                    margin-top: 0.35rem;
-                }
 
-                /* ─ Animations ─ */
-                @keyframes pulseSparkle {
-                    0%, 100% { transform: scale(1) rotate(0deg); opacity: 0.9; }
-                    50% { transform: scale(1.18) rotate(15deg); opacity: 1; }
+                /* ─ Keyframe Animations ─ */
+                @keyframes glimHaloPulse {
+                    0%, 100% { transform: scale(1); opacity: 0.5; }
+                    50% { transform: scale(1.15); opacity: 0.85; }
                 }
                 @keyframes typingBlink {
                     0%, 80%, 100% { transform: scale(0.6); opacity: 0.3; }
                     40% { transform: scale(1); opacity: 1; }
                 }
                 @keyframes popIn {
-                    from { transform: scale(0.92) translateY(16px); opacity: 0; }
+                    from { transform: scale(0.94) translateY(12px); opacity: 0; }
                     to { transform: scale(1) translateY(0); opacity: 1; }
                 }
 
                 /* ─ Mobile Specific Responsive Drawer (Strict) ─ */
                 @media (max-width: 640px) {
-                    .support-agent-wrapper {
+                    .isaac-launcher-container {
                         bottom: 1rem;
                         right: 1rem;
                     }
-                    .agent-launcher-btn {
-                        padding: 0.65rem 0.9rem;
-                    }
                     .agent-chat-card {
-                        position: fixed;
-                        top: 0;
-                        left: 0;
-                        right: 0;
-                        bottom: 0;
+                        position: fixed !important;
+                        top: 0 !important;
+                        left: 0 !important;
+                        right: 0 !important;
+                        bottom: 0 !important;
                         width: 100vw !important;
                         height: 100dvh !important;
                         max-height: 100dvh !important;
-                        border-radius: 0;
-                        border: none;
-                        z-index: 100000;
+                        border-radius: 0 !important;
+                        border: none !important;
+                        z-index: 100000 !important;
+                    }
+                    .agent-resize-handle {
+                        display: none !important;
                     }
                     .agent-header {
                         padding: 0.75rem 0.85rem;
@@ -1215,39 +1530,39 @@ function getRoleGreeting(role: string, name: string): { text: string } {
     const cleanRole = role.toLowerCase();
     if (cleanRole.includes('admin') || cleanRole.includes('principal')) {
         return {
-            text: `👋 Greetings **${name}**! I am your **Administrator AI Support Assistant**.\n\nYou have unrestricted administrative access across all modules (Academic, Fees, Attendance, Examination, Expenses, and Settings).\n\nAsk me how to configure workflows, set class priorities, verify notifications, or navigate any management screen.`
+            text: `👋 Greetings **${name}**! I am **Isaac AI**, your School Administrator Assistant.\n\nYou have unrestricted administrative access across all modules (Academic, Fees, Attendance, Examination, Expenses, and Settings).\n\nAsk me how to configure workflows, set class priorities, verify notifications, or navigate any management screen.`
         };
     }
     if (cleanRole.includes('teacher') || cleanRole.includes('incharge')) {
         return {
-            text: `👋 Hello **${name}**! I am your **Academic & Teaching Assistant**.\n\nI can guide you on **daily student attendance**, **entering exam & class test marks**, or reviewing your assigned classes.\n\nHow can I help you today?`
+            text: `👋 Hello **${name}**! I am **Isaac AI**, your Academic & Teaching Assistant.\n\nI can guide you on **daily student attendance**, **entering exam & class test marks**, or reviewing your assigned classes.\n\nHow can I help you today?`
         };
     }
     if (cleanRole.includes('accountant') || cleanRole.includes('cashier')) {
         return {
-            text: `👋 Welcome **${name}**! I am your **Fee & Financial Support Assistant**.\n\nI can assist you with **fee collection workflows**, **generating monthly slips**, **printing 3-copy vouchers**, or settling family advance balances.\n\nWhat would you like assistance with?`
+            text: `👋 Welcome **${name}**! I am **Isaac AI**, your Fee & Financial Support Assistant.\n\nI can assist you with **fee collection workflows**, **generating monthly slips**, **printing 3-copy vouchers**, or settling family advance balances.\n\nWhat would you like assistance with?`
         };
     }
     if (cleanRole.includes('student') || cleanRole.includes('parent') || cleanRole.includes('family')) {
         return {
-            text: `👋 Hello **${name}**! Welcome to the **Student & Family Support Portal**.\n\nI can guide you on how to check your **monthly fee slips**, **attendance record**, and **published examination result cards**.\n\nHow may I help you?`
+            text: `👋 Hello **${name}**! Welcome to the **Student & Family Support Portal**. I am **Isaac AI**.\n\nI can guide you on how to check your **monthly fee slips**, **attendance record**, and **published examination result cards**.\n\nHow may I help you?`
         };
     }
     return {
-        text: `👋 Hello **${name}**! I am your **School Support AI Assistant**.\n\nI am configured with your active role (**${role}**). Ask me any question regarding your permitted pages, operational procedures, or system notifications.`
+        text: `👋 Hello **${name}**! I am **Isaac AI**, your School Support Assistant.\n\nI am configured with your active role (**${role}**). Ask me any question regarding your permitted pages, operational procedures, or system notifications.`
     };
 }
 
-// ─── Mock Role-Aware Agent Reasoning Engine (Phase 1 Step 1) ─────────────────
+// ─── Mock Role-Aware Agent Reasoning Engine (Phase 1 Fallback) ───────────────
 function generateMockResponse(query: string, role: string, roleLevel: number, currentPath: string): ChatMessage {
     const qLower = query.toLowerCase();
     const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-    // ── 1. SECURITY / RBAC BYPASS REFUSAL TESTS ──
+    // 1. Security / RBAC Refusals
     const restrictedFinanceKeywords = ['salary', 'salaries', 'profit', 'expense totals', 'school revenue', 'delete employee', 'delete user', 'drop table', 'system password'];
     const isAskingRestrictedFinance = restrictedFinanceKeywords.some(k => qLower.includes(k));
 
-    if (isAskingRestrictedFinance && roleLevel < 90) {
+    if (isAskingRestrictedFinance && roleLevel < 80) {
         return {
             id: 'agent-' + Date.now(),
             sender: 'agent',
@@ -1257,7 +1572,7 @@ function generateMockResponse(query: string, role: string, roleLevel: number, cu
         };
     }
 
-    // ── 2. WHAT DOES THIS PAGE DO? ──
+    // 2. What does this page do?
     if (qLower.includes('this page') || qLower.includes('what is the purpose') || qLower.includes('how do i use this')) {
         const pageInfo = PAGE_GUIDES[currentPath];
         if (pageInfo) {
@@ -1276,9 +1591,9 @@ function generateMockResponse(query: string, role: string, roleLevel: number, cu
         };
     }
 
-    // ── 3. PRIORITY SETTING ──
+    // 3. Priority Setting
     if (qLower.includes('priority') || qLower.includes('drag') || qLower.includes('class order')) {
-        if (roleLevel < 90) {
+        if (roleLevel < 80) {
             return {
                 id: 'agent-' + Date.now(),
                 sender: 'agent',
@@ -1290,120 +1605,17 @@ function generateMockResponse(query: string, role: string, roleLevel: number, cu
         return {
             id: 'agent-' + Date.now(),
             sender: 'agent',
-            text: `✨ **How Class & Section Priority Works:**\n\n1. Go to **Academic → Priority Setting**.\n2. **Classes Order**: Drag any class card up or down (smallest classes like Reception/Nursery should be at the top).\n3. **Sections Order**: Click on any class to expand its section pills, then drag the pills to order them (e.g. A → B → C).\n4. **Duplicate Warnings**: If duplicate names exist (e.g., 'Class 1' and 'Class One'), a yellow **Possible Duplicate** badge appears.\n5. Click **Save Order** to apply the priority across Fee Slips, Attendance, Examination, and Reports.`,
+            text: `✨ **How Class & Section Priority Works:**\n\n1. Go to **Academic → Priority Setting** (\`/academic/priority\`).\n2. **Classes Order**: Drag any class card up or down (smallest classes like Reception/Nursery should be at the top).\n3. **Sections Order**: Click on any class to expand its section pills, then drag the pills to order them (e.g. A → B → C).\n4. **Duplicate Warnings**: If duplicate names exist (e.g., 'Class 1' and 'Class One'), a yellow **Possible Duplicate** badge appears.\n5. Click **Save Priority Order** to apply the priority across Fee Slips, Attendance, Examination, and Reports.`,
             pageLinks: [{ label: 'Open Priority Setting', href: '/academic/priority' }],
             timestamp
         };
     }
 
-    // ── 4. HOW TO MARK ATTENDANCE ──
-    if (qLower.includes('attendance') && (qLower.includes('mark') || qLower.includes('how do i') || qLower.includes('daily'))) {
-        return {
-            id: 'agent-' + Date.now(),
-            sender: 'agent',
-            text: `📋 **Daily Student Attendance Procedure:**\n\n1. Open **Attendance → Student Attendance**.\n2. Select your assigned **Class** and **Section** from the dropdowns.\n3. The system defaults all students to **Present**.\n4. Click **A** for Absent, **L** for Late, or **LV** for Approved Leave.\n5. Holidays and locked days cannot be altered unless you possess administrative override permissions.\n6. Click **Save Attendance** to record entries. Automated SMS/push notifications are sent to parents according to school notification policy.`,
-            pageLinks: [{ label: 'Go to Student Attendance', href: '/attendance/students' }],
-            timestamp
-        };
-    }
-
-    // ── 5. HOW TO ENTER EXAM MARKS ──
-    if (qLower.includes('exam') || qLower.includes('marks') || qLower.includes('test marking')) {
-        return {
-            id: 'agent-' + Date.now(),
-            sender: 'agent',
-            text: `✍️ **Examination Marks Workflow:**\n\n- **Term Exams**: Go to **Examination → Marks Entry**, pick the active Term, Class, Section, and Subject. Enter scored marks out of total.\n- **Class Tests**: Go to **Examination → Test Marking** for weekly assessments.\n- **Approvals**: Once marks are submitted by the teacher, they must be approved in **Marks Approval & Publishing** before result cards become accessible on the portal.`,
-            pageLinks: [
-                { label: 'Marks Entry', href: '/examination/marks' },
-                { label: 'Test Marking', href: '/examination/test-marking' }
-            ],
-            timestamp
-        };
-    }
-
-    // ── 6. FEE COLLECTION & PRINTING ──
-    if (qLower.includes('fee') || qLower.includes('collect') || qLower.includes('voucher') || qLower.includes('slip')) {
-        if (roleLevel === 50) {
-            return {
-                id: 'agent-' + Date.now(),
-                sender: 'agent',
-                isRefusal: true,
-                text: `⚠️ **Notice for Teachers:**\n\nFee collection, slip generation, and financial ledgers are restricted to the **Accounts Department**. Teachers can only view assigned academic classes and student attendance.`,
-                timestamp
-            };
-        }
-        return {
-            id: 'agent-' + Date.now(),
-            sender: 'agent',
-            text: `💵 **Fee Collection & Voucher Guide:**\n\n1. **Collect Fees**: Navigate to **Fee Management → Collect Fees**. Enter Student Roll No or Family ID.\n2. **Advance Balances**: If the family has an advance credit balance, you can check **Apply Advance** to automatically reduce the payable amount.\n3. **Print Slips**: In **Fee Management → Print Slips**, select the billing month to print standardized 3-copy bank vouchers (Bank, School, and Student copies).`,
-            pageLinks: [
-                { label: 'Collect Fees Screen', href: '/fees/collect' },
-                { label: 'Print Fee Slips', href: '/fees/print' }
-            ],
-            timestamp
-        };
-    }
-
-    // ── 7. PERMITTED PAGES & ROLES ──
-    if (qLower.includes('what can i access') || qLower.includes('my role') || qLower.includes('permissions') || qLower.includes('which pages')) {
-        return {
-            id: 'agent-' + Date.now(),
-            sender: 'agent',
-            text: `🔐 **Your Role Profile:**\n\n- **Role Name**: ${role}\n- **Role Level**: ${roleLevel} / 100\n\n**Allowed Capabilities:**\n${getRoleCapabilitiesList(roleLevel)}`,
-            timestamp
-        };
-    }
-
-    // ── 8. NOTIFICATIONS ──
-    if (qLower.includes('notification') || qLower.includes('alert') || qLower.includes('message')) {
-        return {
-            id: 'agent-' + Date.now(),
-            sender: 'agent',
-            text: `🔔 **Notification System Rules for ${role}:**\n\n${getNotificationExplanation(roleLevel)}`,
-            timestamp
-        };
-    }
-
-    // ── 9. DEFAULT HELPFUL FALLBACK ──
+    // 4. Default Helpful Fallback
     return {
         id: 'agent-' + Date.now(),
         sender: 'agent',
-        text: `I understand your question regarding **"${query}"**.\n\nAs your **${role} Support Assistant**, I can guide you through system workflows, page navigation, attendance protocols, and examination procedures.\n\nFeel free to click any of the **Quick Suggestions** below or ask a specific workflow question!`,
+        text: `I understand your question regarding **"${query}"**.\n\nAs your **Isaac AI Assistant** for **${role}**, I can guide you through system workflows, page navigation, attendance protocols, and examination procedures.\n\nFeel free to click any of the **Quick Suggestions** below or ask a specific workflow question!`,
         timestamp
     };
-}
-
-function getRoleCapabilitiesList(roleLevel: number): string {
-    if (roleLevel >= 90) {
-        return `• Full School Settings & System Backups\n• User Account Management & Role Permission Editing\n• Class & Section Priority Setting\n• Full Fee Management & Audit Reports\n• Exam Publishing Approvals & Attendance Policies`;
-    }
-    if (roleLevel >= 65) {
-        return `• Coordinated Class Student Attendance\n• Term Exam Review & Department Oversight\n• Academic Promotion Assistance`;
-    }
-    if (roleLevel === 50) {
-        return `• Daily Student Attendance for assigned classes\n• Marks Entry for assigned subjects\n• Class Test Marking\n• Class Incharge Marks Sheet & Result Card viewing`;
-    }
-    if (roleLevel === 30) {
-        return `• Monthly Fee Slip Generation\n• Fee Collection & Receipt Printing\n• Family Ledger & Advance Balance Management\n• Daily & Monthly Financial Collection Reports\n• School Operational Expense Entry`;
-    }
-    if (roleLevel === 10) {
-        return `• Personal Fee Slip & Payment Status\n• Personal Attendance History\n• Published Term Result Cards`;
-    }
-    return `• Standard Support Staff Functions\n• Basic Attendance Check-in`;
-}
-
-function getNotificationExplanation(roleLevel: number): string {
-    if (roleLevel >= 90) {
-        return `As Administrator, you receive all operational notices including **Exam Marksheet Submissions awaiting approval**, **Expense approvals**, **Staff daily attendance anomalies**, and **Fee generation summaries**.`;
-    }
-    if (roleLevel === 50) {
-        return `As Teacher, you receive **Direct Staff Announcements**, **Class Teacher Assignment updates**, and alerts when your submitted exam marks are approved or published.`;
-    }
-    if (roleLevel === 30) {
-        return `As Accountant, you receive **Fee Slip Generation confirmations**, **Family Advance Balance adjustment notifications**, and **Expense status updates**.`;
-    }
-    if (roleLevel === 10) {
-        return `As Student/Parent, you strictly receive notices addressed to your family or student ID, such as **Fee Due Reminders**, **Daily Attendance SMS/alerts**, and **Published Term Result Card announcements**.`;
-    }
-    return `You receive direct notices addressed to your account or general staff announcements.`;
 }
