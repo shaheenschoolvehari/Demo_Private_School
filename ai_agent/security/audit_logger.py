@@ -26,3 +26,4 @@ def log_audit_event(
     except Exception as e:
         # Fallback print to prevent crashing the agent if audit logging fails
         print(f"[AUDIT LOG FAILURE] Could not write audit log: {e}")
+

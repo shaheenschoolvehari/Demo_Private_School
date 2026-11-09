@@ -58,3 +58,4 @@ def create_agent_graph():
 
 # Global compiled graph instance
 agent_workflow = create_agent_graph()
+

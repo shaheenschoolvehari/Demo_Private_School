@@ -18,7 +18,12 @@ class AgentState(TypedDict):
     
     # Retrieved role-permitted context
     retrieved_chunks: List[Dict[str, Any]]
+
+    # Live Database Tool execution
+    tool_intent: Optional[str]
+    tool_result: Optional[Dict[str, Any]]
     
     # Final output
     final_response: str
     audit_logged: bool
+

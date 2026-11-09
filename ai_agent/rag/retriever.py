@@ -79,3 +79,4 @@ def retrieve_permitted_chunks(
         top_results = [permitted_candidates[0]]
 
     return top_results
+
